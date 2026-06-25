@@ -293,9 +293,11 @@ mut:
 	model             ClusteringModel
 	color_manager     shared ColorManager
 	last_state        string
+	last_winner       int
 	last_confidence   f64
 	conf_threshold    f64
 	compressor        StateCompressor
+	morph_mode        bool
 }
 
 fn is_ip_str(s string) bool {
@@ -346,6 +348,14 @@ fn (mut r FastRng) next_f64() f64 {
 	temp2 *= 0x8ebc6af09c316535
 	val := temp2 ^ (temp2 >> 31)
 	return f64(val & 0xFFFFFFFFFFFF) / 281474976710656.0
+}
+
+fn (mut r FastRng) next_u8() u8 {
+	r.state += 0xa0761d6478bd642f
+	mut temp := r.state ^ (r.state >> 30)
+	temp *= 0xe7037ed1a0b428db
+	val := temp ^ (temp >> 27)
+	return u8(val & 0xFF)
 }
 
 fn (mut r FastRng) int_in_range(min int, max int) int {
@@ -740,10 +750,11 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 		avg_byte_uniformity
 	]
 
-	learning_rate := if ta.last_state == '' { 0.1 } else { 0.02 }
+	learning_rate := if ta.morph_mode { 0.0 } else if ta.last_state == '' { 0.1 } else { 0.02 }
 	winner, confidence := ta.model.predict_and_update(input, learning_rate)
 
 	ta.last_confidence = confidence
+	ta.last_winner = winner
 
 	if confidence >= ta.conf_threshold {
 		compressed_state := ta.compressor.add_state(winner.str())
@@ -832,15 +843,19 @@ fn send_udp_with_delay(mut conn &net.UdpConn, packet UdpChunk) {
 	conn.write_to(packet.dest, packet.data) or { return }
 }
 
-fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig, target_addr string, direction string, mut analyzer &TrafficAnalyzer, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string) {
+fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig, target_addr string, direction string, mut analyzer &TrafficAnalyzer, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, morph_mode bool) {
 	mut local_cfg := cfg
 	mut buf := []u8{len: 4096}
 	mut rng := new_fast_rng()
+	mut next_send_time := time.now().unix_milli()
+	mut packet_index := 0
 	for {
 		bytes_read := src.read(mut buf) or { break }
 		if bytes_read == 0 {
 			break
 		}
+		packet_index++
+		is_handshake := packet_index < 15
 
 		is_matched := matches_filter(target_addr, target_filter)
 
@@ -897,24 +912,91 @@ fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig, target_addr 
 		if should_drop(mut active_cfg, mut rng) {
 			continue
 		}
-		data := buf[..bytes_read].clone()
-		delay := get_dynamic_latency_physical(mut active_cfg, mut rng, bytes_read)
-		arrival := time.now().unix_milli() + delay
-		
-		mut pushed := false
-		select {
-			ch <- TcpChunk{ 
-				data:         data
-				arrival_time: arrival
-			} {
-				pushed = true
+
+		mut packets_to_send := [][]u8{}
+		should_morph := morph_mode && !is_handshake && analyzer.last_confidence >= conf_threshold
+
+		if should_morph {
+			target_size := int(analyzer.model.centroids[analyzer.last_winner][1] * 1500.0)
+			mut safe_target_size := target_size
+			if safe_target_size < 512 {
+				safe_target_size = 512 
 			}
-			500 * time.millisecond {
-				// timeout
+			if safe_target_size > 1460 {
+				safe_target_size = 1460 
 			}
+
+			data := buf[..bytes_read].clone()
+			if data.len < safe_target_size {
+				mut padded := data.clone()
+				for padded.len < safe_target_size {
+					padded << rng.next_u8()
+				}
+				packets_to_send << padded
+			} else if data.len > safe_target_size {
+				mut offset := 0
+				mut frag_count := 0
+				for offset < data.len {
+					frag_count++
+					mut chunk_size := safe_target_size
+					if frag_count >= 4 || offset + chunk_size > data.len {
+						chunk_size = data.len - offset
+					}
+					mut chunk := data[offset..offset + chunk_size].clone()
+					if chunk.len < safe_target_size && frag_count < 4 {
+						for chunk.len < safe_target_size {
+							chunk << rng.next_u8()
+						}
+					}
+					packets_to_send << chunk
+					offset += chunk_size
+					if frag_count >= 4 {
+						break
+					}
+				}
+			} else {
+				packets_to_send << data
+			}
+		} else {
+			packets_to_send << buf[..bytes_read].clone()
 		}
-		if !pushed {
-			break
+
+		for pkt_data in packets_to_send {
+			delay := get_dynamic_latency_physical(mut active_cfg, mut rng, pkt_data.len)
+			mut arrival := time.now().unix_milli() + delay
+
+			if should_morph {
+				target_pps := analyzer.model.centroids[analyzer.last_winner][0] * 120.0
+				mut interval := i64(0)
+				if target_pps > 1.0 {
+					interval = i64(1000.0 / target_pps)
+				}
+				now := time.now().unix_milli()
+				if next_send_time < now {
+					next_send_time = now
+				}
+				if next_send_time > now + 500 {
+					next_send_time = now + 500
+				}
+				arrival = next_send_time + delay
+				next_send_time += interval
+			}
+
+			mut pushed := false
+			select {
+				ch <- TcpChunk{ 
+					data:         pkt_data
+					arrival_time: arrival
+				} {
+					pushed = true
+				}
+				500 * time.millisecond {
+					// timeout
+				}
+			}
+			if !pushed {
+				break
+			}
 		}
 	}
 	ch.close()
@@ -937,7 +1019,7 @@ fn write_tcp_delayed(mut dst &net.TcpConn, ch chan TcpChunk) {
 	dst.close() or {}
 }
 
-fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar) {
+fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar, morph_mode bool) {
 	mut server_conn := dial_target(target, upstream) or {
 		eprintln('[TCP] Failed to connect to server: ${err}')
 		client.close() or {}
@@ -951,34 +1033,38 @@ fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfi
 		model: model.clone()
 		color_manager: cm
 		last_state: ''
+		last_winner: 0
 		last_confidence: 0.0
 		conf_threshold: conf_threshold
 		compressor: StateCompressor{
 			threshold: 3
 			grammar: grammar
 		}
+		morph_mode: morph_mode
 	}
 	mut analyzer_down := TrafficAnalyzer{
 		model: model.clone()
 		color_manager: cm
 		last_state: ''
+		last_winner: 0
 		last_confidence: 0.0
 		conf_threshold: conf_threshold
 		compressor: StateCompressor{
 			threshold: 3
 			grammar: grammar
 		}
+		morph_mode: morph_mode
 	}
 
 	mut threads := []thread{}
-	threads << spawn read_tcp(mut &client, ch_to_server, up_cfg, target, 'upstream', mut &analyzer_up, lag_configs, lag_states, conf_threshold, target_filter)
-	threads << spawn read_tcp(mut server_ref, ch_to_client, down_cfg, target, 'downstream', mut &analyzer_down, lag_configs, lag_states, conf_threshold, target_filter)
+	threads << spawn read_tcp(mut &client, ch_to_server, up_cfg, target, 'upstream', mut &analyzer_up, lag_configs, lag_states, conf_threshold, target_filter, morph_mode)
+	threads << spawn read_tcp(mut server_ref, ch_to_client, down_cfg, target, 'downstream', mut &analyzer_down, lag_configs, lag_states, conf_threshold, target_filter, morph_mode)
 	threads << spawn write_tcp_delayed(mut server_ref, ch_to_server)
 	threads << spawn write_tcp_delayed(mut &client, ch_to_client)
 	threads.wait()
 }
 
-fn start_tcp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar) {
+fn start_tcp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar, morph_mode bool) {
 	_ = port
 	mut listener := net.listen_tcp(.ip, '127.0.0.1:${port}') or {
 		eprintln('Failed to start TCP proxy: ${err}')
@@ -987,32 +1073,38 @@ fn start_tcp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 	println('Lagger TCP proxy listening on port ${port} forwarding to ${target}')
 	for {
 		mut client_conn := listener.accept() or { continue }
-		spawn handle_tcp_connection(mut client_conn, target, up_cfg, down_cfg, upstream, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar)
+		spawn handle_tcp_connection(mut client_conn, target, up_cfg, down_cfg, upstream, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
 	}
 }
 
-fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &net.UdpConn, shared holder ClientAddrHolder, cfg WaveConfig, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar) {
+fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &net.UdpConn, shared holder ClientAddrHolder, cfg WaveConfig, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar, morph_mode bool) {
 	mut local_cfg := cfg
 	mut buf := []u8{len: 2048}
 	mut analyzer := TrafficAnalyzer{
 		model: model.clone()
 		color_manager: cm
 		last_state: ''
+		last_winner: 0
 		last_confidence: 0.0
 		conf_threshold: conf_threshold
 		compressor: StateCompressor{
 			threshold: 3
 			grammar: grammar
 		}
+		morph_mode: morph_mode
 	}
 	mut rng := new_fast_rng()
 	mut last_dest_str := ''
 	mut cached_dest := net.Addr{}
+	mut next_send_time := time.now().unix_milli()
+	mut packet_index := 0
 	for {
 		bytes_read, _ := target_conn.read(mut buf) or { continue }
 		if bytes_read == 0 {
 			continue
 		}
+		packet_index++
+		is_handshake := packet_index < 15
 
 		is_matched := matches_filter('UDP_Downstream_Server', target_filter)
 		if is_matched {
@@ -1068,45 +1160,91 @@ fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &ne
 		if should_drop(mut active_cfg, mut rng) {
 			continue
 		}
-		packet_data := buf[..bytes_read].clone()
-		delay := get_dynamic_latency_physical(mut active_cfg, mut rng, bytes_read)
-		mut arrival := time.now().unix_milli() + delay
-		if rng.next_f64() < 0.02 {
-			arrival -= 8
-		}
-		mut dest_str := ''
-		lock holder {
-			dest_str = holder.addr_str
-		}
-		if dest_str != '' {
-			mut dest := net.Addr{}
-			if dest_str == last_dest_str {
-				dest = cached_dest
-			} else {
-				dest_addrs := net.resolve_addrs_fuzzy(dest_str, .udp) or { continue }
-				if dest_addrs.len == 0 {
-					continue
+
+		mut packets_to_send := [][]u8{}
+		should_morph := morph_mode && !is_handshake && analyzer.last_confidence >= conf_threshold
+
+		if should_morph {
+			target_size := int(analyzer.model.centroids[analyzer.last_winner][1] * 1500.0)
+			mut safe_target_size := target_size
+			if safe_target_size < 256 {
+				safe_target_size = 256
+			}
+			if safe_target_size > 1400 {
+				safe_target_size = 1400
+			}
+			data := buf[..bytes_read].clone()
+			if data.len < safe_target_size {
+				mut padded := data.clone()
+				for padded.len < safe_target_size {
+					padded << rng.next_u8()
 				}
-				dest = dest_addrs[0]
-				last_dest_str = dest_str
-				cached_dest = dest
+				packets_to_send << padded
+			} else {
+				packets_to_send << data
+			}
+		} else {
+			packets_to_send << buf[..bytes_read].clone()
+		}
+
+		for pkt_data in packets_to_send {
+			delay := get_dynamic_latency_physical(mut active_cfg, mut rng, pkt_data.len)
+			mut arrival := time.now().unix_milli() + delay
+			if rng.next_f64() < 0.02 {
+				arrival -= 8
 			}
 
-			now := time.now().unix_milli()
-			if arrival <= now {
-				proxy_conn.write_to(dest, packet_data) or {}
-			} else {
-				spawn send_udp_with_delay(mut proxy_conn, UdpChunk{
-					data:         packet_data
-					dest:         dest
-					arrival_time: arrival
-				})
+			if should_morph {
+				target_pps := analyzer.model.centroids[analyzer.last_winner][0] * 120.0
+				mut interval := i64(0)
+				if target_pps > 1.0 {
+					interval = i64(1000.0 / target_pps)
+				}
+				now := time.now().unix_milli()
+				if next_send_time < now {
+					next_send_time = now
+				}
+				if next_send_time > now + 500 {
+					next_send_time = now + 500
+				}
+				arrival = next_send_time + delay
+				next_send_time += interval
+			}
+
+			mut dest_str := ''
+			lock holder {
+				dest_str = holder.addr_str
+			}
+			if dest_str != '' {
+				mut dest := net.Addr{}
+				if dest_str == last_dest_str {
+					dest = cached_dest
+				} else {
+					dest_addrs := net.resolve_addrs_fuzzy(dest_str, .udp) or { continue }
+					if dest_addrs.len == 0 {
+						continue
+					}
+					dest = dest_addrs[0]
+					last_dest_str = dest_str
+					cached_dest = dest
+				}
+
+				now := time.now().unix_milli()
+				if arrival <= now {
+					proxy_conn.write_to(dest, pkt_data) or {}
+				} else {
+					spawn send_udp_with_delay(mut proxy_conn, UdpChunk{
+						data:         pkt_data
+						dest:         dest
+						arrival_time: arrival
+					})
+				}
 			}
 		}
 	}
 }
 
-fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConfig, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar) {
+fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConfig, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar, morph_mode bool) {
 	_ = port
 	mut proxy_conn := net.listen_udp('127.0.0.1:${port}') or {
 		eprintln('Failed to start UDP proxy: ${err}')
@@ -1135,17 +1273,86 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 	dest := dest_addrs[0]
 
 	shared holder := &ClientAddrHolder{}
-	spawn forward_udp_server_to_client(mut target_conn, mut proxy_conn, shared holder, down_cfg, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar)
+	spawn forward_udp_server_to_client(mut target_conn, mut proxy_conn, shared holder, down_cfg, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
 	mut local_up_cfg := up_cfg
 	mut buf := []u8{len: 2048}
 	mut rng := new_fast_rng()
+
+	mut analyzer := TrafficAnalyzer{
+		model: model.clone()
+		color_manager: cm
+		last_state: ''
+		last_winner: 0
+		last_confidence: 0.0
+		conf_threshold: conf_threshold
+		compressor: StateCompressor{
+			threshold: 3
+			grammar: grammar
+		}
+		morph_mode: morph_mode
+	}
+	mut next_send_time := time.now().unix_milli()
+	mut packet_index := 0
+
 	for {
 		bytes_read, client_addr := proxy_conn.read(mut buf) or { continue }
 		if bytes_read == 0 {
 			continue
 		}
+		packet_index++
+		is_handshake := packet_index < 15
 		
+		is_matched := matches_filter('UDP_Upstream_Client', target_filter)
+		if is_matched {
+			analyzer.add_packet(buf[..bytes_read], 'UDP_Upstream_Client')
+		}
+
 		mut active_up_cfg := local_up_cfg
+		state_str := analyzer.last_state
+
+		if !is_matched {
+			active_up_cfg.min_lat = 0
+			active_up_cfg.max_lat = 0
+			active_up_cfg.loss_enabled = false
+		} else {
+			mut should_apply_lag := true
+			if analyzer.last_confidence < conf_threshold {
+				should_apply_lag = false
+			}
+
+			if should_apply_lag {
+				if lag_configs.len > 0 {
+					if state_str in lag_configs {
+						active_up_cfg = lag_configs[state_str]
+						if local_up_cfg.analyze_only {
+							active_up_cfg.analyze_only = true
+						}
+					} else {
+						active_up_cfg.min_lat = 0
+						active_up_cfg.max_lat = 0
+						active_up_cfg.loss_enabled = false
+					}
+				} else if lag_states.len > 0 {
+					mut matches := false
+					for ls in lag_states {
+						if analyzer.last_state == ls || analyzer.last_state.contains(ls) {
+							matches = true
+							break
+						}
+					}
+					if !matches {
+						active_up_cfg.min_lat = 0
+						active_up_cfg.max_lat = 0
+						active_up_cfg.loss_enabled = false
+					}
+				}
+			} else {
+				active_up_cfg.min_lat = 0
+				active_up_cfg.max_lat = 0
+				active_up_cfg.loss_enabled = false
+			}
+		}
+
 		if should_drop(mut active_up_cfg, mut rng) {
 			continue
 		}
@@ -1154,27 +1361,72 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 		lock holder {
 			holder.addr_str = client_str
 		}
-		packet_data := buf[..bytes_read].clone()
-		delay := get_dynamic_latency_physical(mut active_up_cfg, mut rng, bytes_read)
-		mut arrival := time.now().unix_milli() + delay
-		if rng.next_f64() < 0.02 {
-			arrival -= 8
-		}
-		
-		now := time.now().unix_milli()
-		if arrival <= now {
-			target_conn.write_to(dest, packet_data) or {}
+
+		mut packets_to_send := [][]u8{}
+		should_morph := morph_mode && !is_handshake && analyzer.last_confidence >= conf_threshold
+
+		if should_morph {
+			target_size := int(analyzer.model.centroids[analyzer.last_winner][1] * 1500.0)
+			mut safe_target_size := target_size
+			if safe_target_size < 256 {
+				safe_target_size = 256
+			}
+			if safe_target_size > 1400 {
+				safe_target_size = 1400
+			}
+			data := buf[..bytes_read].clone()
+			if data.len < safe_target_size {
+				mut padded := data.clone()
+				for padded.len < safe_target_size {
+					padded << rng.next_u8()
+				}
+				packets_to_send << padded
+			} else {
+				packets_to_send << data
+			}
 		} else {
-			spawn send_udp_with_delay(mut target_conn, UdpChunk{
-				data:         packet_data
-				dest:         dest
-				arrival_time: arrival
-			})
+			packets_to_send << buf[..bytes_read].clone()
+		}
+
+		for pkt_data in packets_to_send {
+			delay := get_dynamic_latency_physical(mut active_up_cfg, mut rng, pkt_data.len)
+			mut arrival := time.now().unix_milli() + delay
+			if rng.next_f64() < 0.02 {
+				arrival -= 8
+			}
+
+			if should_morph {
+				target_pps := analyzer.model.centroids[analyzer.last_winner][0] * 120.0
+				mut interval := i64(0)
+				if target_pps > 1.0 {
+					interval = i64(1000.0 / target_pps)
+				}
+				now := time.now().unix_milli()
+				if next_send_time < now {
+					next_send_time = now
+				}
+				if next_send_time > now + 500 {
+					next_send_time = now + 500
+				}
+				arrival = next_send_time + delay
+				next_send_time += interval
+			}
+			
+			now := time.now().unix_milli()
+			if arrival <= now {
+				target_conn.write_to(dest, pkt_data) or {}
+			} else {
+				spawn send_udp_with_delay(mut target_conn, UdpChunk{
+					data:         pkt_data
+					dest:         dest
+					arrival_time: arrival
+				})
+			}
 		}
 	}
 }
 
-fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar) {
+fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar, morph_mode bool) {
 	mut buf := []u8{len: 512}
 	bytes_read := client.read(mut buf) or { return }
 	if bytes_read < 2 || buf[0] != 0x05 {
@@ -1233,34 +1485,38 @@ fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig,
 		model: model.clone()
 		color_manager: cm
 		last_state: ''
+		last_winner: 0
 		last_confidence: 0.0
 		conf_threshold: conf_threshold
 		compressor: StateCompressor{
 			threshold: 3
 			grammar: grammar
 		}
+		morph_mode: morph_mode
 	}
 	mut analyzer_down := TrafficAnalyzer{
 		model: model.clone()
 		color_manager: cm
 		last_state: ''
+		last_winner: 0
 		last_confidence: 0.0
 		conf_threshold: conf_threshold
 		compressor: StateCompressor{
 			threshold: 3
 			grammar: grammar
 		}
+		morph_mode: morph_mode
 	}
 
 	mut threads := []thread{}
-	threads << spawn read_tcp(mut &client, ch_to_server, up_cfg, target_addr, 'upstream', mut &analyzer_up, lag_configs, lag_states, conf_threshold, target_filter)
-	threads << spawn read_tcp(mut server_ref, ch_to_client, down_cfg, target_addr, 'downstream', mut &analyzer_down, lag_configs, lag_states, conf_threshold, target_filter)
+	threads << spawn read_tcp(mut &client, ch_to_server, up_cfg, target_addr, 'upstream', mut &analyzer_up, lag_configs, lag_states, conf_threshold, target_filter, morph_mode)
+	threads << spawn read_tcp(mut server_ref, ch_to_client, down_cfg, target_addr, 'downstream', mut &analyzer_down, lag_configs, lag_states, conf_threshold, target_filter, morph_mode)
 	threads << spawn write_tcp_delayed(mut server_ref, ch_to_server)
 	threads << spawn write_tcp_delayed(mut &client, ch_to_client)
 	threads.wait()
 }
 
-fn start_socks5_proxy(port int, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar) {
+fn start_socks5_proxy(port int, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar, morph_mode bool) {
 	_ = port
 	mut listener := net.listen_tcp(.ip, '127.0.0.1:${port}') or {
 		eprintln('Failed to start SOCKS5 proxy: ${err}')
@@ -1269,7 +1525,7 @@ fn start_socks5_proxy(port int, up_cfg WaveConfig, down_cfg WaveConfig, upstream
 	println('Lagger SOCKS5 proxy listening on port ${port}')
 	for {
 		mut client_conn := listener.accept() or { continue }
-		spawn handle_socks5(mut client_conn, up_cfg, down_cfg, upstream, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar)
+		spawn handle_socks5(mut client_conn, up_cfg, down_cfg, upstream, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
 	}
 }
 
@@ -1326,6 +1582,7 @@ fn main() {
 	conf_threshold := fp.float('conf-threshold', `c`, 0.0, 'Minimum neural network confidence percentage to trigger lag and display transitions (0 to 100)')
 	
 	target_filter_raw := fp.string('target-filter', `t`, '', 'Only analyze/lag targets matching this comma-separated filter (e.g. "telegram,149.154")')
+	morph_mode := fp.bool('morph', `X`, false, 'Morph traffic sizes and timing to match the loaded model')
 
 	_ := fp.finalize() or {
 		eprintln(err)
@@ -1493,13 +1750,21 @@ fn main() {
 		println('Running in ANALYZE-ONLY mode. Lagging is bypassed.')
 	}
 
+	if morph_mode {
+		if load_path == '' {
+			println('\x1b[31m[WARNING] Morph mode is enabled but no model (--load-model) is loaded. Using default centroids.\x1b[0m')
+		} else {
+			println('\x1b[32m[SYSTEM] Morphing Mode ACTIVE. Reshaping packet sizes with high-entropy random padding and timing pacing to look like the loaded model.\x1b[0m')
+		}
+	}
+
 	println('Starting Lagger Dynamic Latency & Behavior Analyzer')
 	if proto == 'tcp' {
-		start_tcp_proxy(port, target, up_cfg, down_cfg, upstream, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar)
+		start_tcp_proxy(port, target, up_cfg, down_cfg, upstream, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
 	} else if proto == 'udp' {
-		start_udp_proxy(port, target, up_cfg, down_cfg, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar)
+		start_udp_proxy(port, target, up_cfg, down_cfg, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
 	} else if proto == 'socks5' {
-		start_socks5_proxy(port, up_cfg, down_cfg, upstream, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar)
+		start_socks5_proxy(port, up_cfg, down_cfg, upstream, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
 	} else {
 		eprintln('Unknown protocol: ${proto}')
 	}
