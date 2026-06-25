@@ -101,7 +101,7 @@ fn (mut m ClusteringModel) predict_and_update(input []f64, learning_rate f64) (i
 			m.centroids[winner][j] += learning_rate * (input[j] - m.centroids[winner][j])
 		}
 	}
-	
+
 	confidence := math.exp(-min_dist * 0.33) * 100.0
 	return winner, confidence
 }
@@ -119,12 +119,17 @@ fn (t StateToken) str() string {
 	return t.state
 }
 
-struct StateCompressor {
+struct SharedGrammar {
 mut:
-	history     []StateToken
 	pair_counts map[string]int
 	merge_rules map[string]string
-	threshold   int = 3
+}
+
+struct StateCompressor {
+mut:
+	history   []StateToken
+	threshold int = 3
+	grammar   shared SharedGrammar
 }
 
 fn (mut sc StateCompressor) squash() {
@@ -151,8 +156,18 @@ fn (mut sc StateCompressor) apply_merges() {
 		p1 := sc.history[i].str()
 		p2 := sc.history[i + 1].str()
 		pair_key := '${p1}_${p2}'
-		if pair_key in sc.merge_rules {
-			merged := sc.merge_rules[pair_key]
+		
+		mut has_rule := false
+		mut merged := ''
+		shared g := sc.grammar
+		lock g {
+			if pair_key in g.merge_rules {
+				has_rule = true
+				merged = g.merge_rules[pair_key]
+			}
+		}
+
+		if has_rule {
 			sc.history[i] = StateToken{
 				state: merged
 				count: 1
@@ -185,17 +200,25 @@ fn (mut sc StateCompressor) add_state(new_state string) string {
 		p2 := sc.history[sc.history.len - 1].str()
 		pair_key := '${p1}_${p2}'
 
-		sc.pair_counts[pair_key]++
+		mut trigger_merge := false
+		mut merged_state := ''
+		shared g := sc.grammar
+		lock g {
+			g.pair_counts[pair_key]++
+			if g.pair_counts[pair_key] >= sc.threshold && !(pair_key in g.merge_rules) {
+				merged_state = '${p1}+${p2}'
+				g.merge_rules[pair_key] = merged_state
+				trigger_merge = true
+			}
+		}
 
-		if sc.pair_counts[pair_key] >= sc.threshold && !(pair_key in sc.merge_rules) {
-			merged_state := '${p1}+${p2}'
-			sc.merge_rules[pair_key] = merged_state
+		if trigger_merge {
 			println('\x1b[33m[State Merger] New structural grammar rule: ${p1} + ${p2} -> ${merged_state}\x1b[0m')
 			sc.apply_merges()
 		}
 	}
-
-	if sc.history.len > 100 {
+	
+	if sc.history.len > 1000 {
 		sc.history.delete(0)
 	}
 
@@ -214,6 +237,8 @@ struct LaggerConfig {
 mut:
 	model       ClusteringModel
 	lag_configs map[string]WaveConfig
+	merge_rules map[string]string
+	pair_counts map[string]int
 }
 
 fn (mut cm ColorManager) get_color(state string) string {
@@ -534,7 +559,7 @@ fn (mut ta TrafficAnalyzer) add_packet(data []u8, target_addr string) {
 	packet_entropy := calculate_entropy(data)
 	ta.entropies << packet_entropy
 	ta.packet_sizes << size
-	
+
 	p_roll_var := calculate_rolling_entropy_variance(data)
 	ta.rolling_entropy_vars << p_roll_var
 
@@ -625,7 +650,7 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 		}
 	}
 	burst_ratio := if ta.intervals.len > 0 { f64(short_interval_count) / f64(ta.intervals.len) } else { 0.0 }
-	
+
 	mut block_aligned_count := 0
 	for sz in ta.packet_sizes {
 		if sz > 0 && sz % 16 == 0 {
@@ -650,7 +675,7 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 	norm_pps := math.min(1.0, pps / 120.0)
 	norm_size := math.min(1.0, avg_size / 1500.0)
 	norm_jitter := math.min(1.0, jitter / 500.0)
-	
+
 	input := [
 		norm_pps,
 		norm_size,
@@ -860,7 +885,7 @@ fn write_tcp_delayed(mut dst &net.TcpConn, ch chan TcpChunk) {
 	dst.close() or {}
 }
 
-fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string) {
+fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string, shared grammar SharedGrammar) {
 	mut server_conn := dial_target(target, upstream) or {
 		eprintln('[TCP] Failed to connect to server: ${err}')
 		client.close() or {}
@@ -876,6 +901,10 @@ fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfi
 		last_state: ''
 		last_confidence: 0.0
 		conf_threshold: conf_threshold
+		compressor: StateCompressor{
+			threshold: 3
+			grammar: grammar
+		}
 	}
 	mut analyzer_down := TrafficAnalyzer{
 		model: model
@@ -883,6 +912,10 @@ fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfi
 		last_state: ''
 		last_confidence: 0.0
 		conf_threshold: conf_threshold
+		compressor: StateCompressor{
+			threshold: 3
+			grammar: grammar
+		}
 	}
 
 	mut threads := []thread{}
@@ -893,7 +926,7 @@ fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfi
 	threads.wait()
 }
 
-fn start_tcp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string) {
+fn start_tcp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string, shared grammar SharedGrammar) {
 	_ = port
 	mut listener := net.listen_tcp(.ip, '127.0.0.1:${port}') or {
 		eprintln('Failed to start TCP proxy: ${err}')
@@ -902,11 +935,11 @@ fn start_tcp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 	println('Lagger TCP proxy listening on port ${port} forwarding to ${target}')
 	for {
 		mut client_conn := listener.accept() or { continue }
-		spawn handle_tcp_connection(mut client_conn, target, up_cfg, down_cfg, upstream, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter)
+		spawn handle_tcp_connection(mut client_conn, target, up_cfg, down_cfg, upstream, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar)
 	}
 }
 
-fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &net.UdpConn, shared holder ClientAddrHolder, cfg WaveConfig, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string) {
+fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &net.UdpConn, shared holder ClientAddrHolder, cfg WaveConfig, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string, shared grammar SharedGrammar) {
 	mut local_cfg := cfg
 	mut buf := []u8{len: 2048}
 	mut analyzer := TrafficAnalyzer{
@@ -915,6 +948,10 @@ fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &ne
 		last_state: ''
 		last_confidence: 0.0
 		conf_threshold: conf_threshold
+		compressor: StateCompressor{
+			threshold: 3
+			grammar: grammar
+		}
 	}
 	for {
 		bytes_read, _ := target_conn.read(mut buf) or { continue }
@@ -1001,7 +1038,7 @@ fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &ne
 	}
 }
 
-fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConfig, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string) {
+fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConfig, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string, shared grammar SharedGrammar) {
 	_ = port
 	mut proxy_conn := net.listen_udp('127.0.0.1:${port}') or {
 		eprintln('Failed to start UDP proxy: ${err}')
@@ -1019,7 +1056,7 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 		target_conn.close() or {}
 	}
 	shared holder := &ClientAddrHolder{}
-	spawn forward_udp_server_to_client(mut target_conn, mut proxy_conn, shared holder, down_cfg, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter)
+	spawn forward_udp_server_to_client(mut target_conn, mut proxy_conn, shared holder, down_cfg, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar)
 	mut local_up_cfg := up_cfg
 	mut buf := []u8{len: 2048}
 	for {
@@ -1056,7 +1093,7 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 	}
 }
 
-fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string) {
+fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string, shared grammar SharedGrammar) {
 	mut buf := []u8{len: 512}
 	bytes_read := client.read(mut buf) or { return }
 	if bytes_read < 2 || buf[0] != 0x05 {
@@ -1117,6 +1154,10 @@ fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig,
 		last_state: ''
 		last_confidence: 0.0
 		conf_threshold: conf_threshold
+		compressor: StateCompressor{
+			threshold: 3
+			grammar: grammar
+		}
 	}
 	mut analyzer_down := TrafficAnalyzer{
 		model: model
@@ -1124,6 +1165,10 @@ fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig,
 		last_state: ''
 		last_confidence: 0.0
 		conf_threshold: conf_threshold
+		compressor: StateCompressor{
+			threshold: 3
+			grammar: grammar
+		}
 	}
 
 	mut threads := []thread{}
@@ -1134,7 +1179,7 @@ fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig,
 	threads.wait()
 }
 
-fn start_socks5_proxy(port int, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string) {
+fn start_socks5_proxy(port int, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string, shared grammar SharedGrammar) {
 	_ = port
 	mut listener := net.listen_tcp(.ip, '127.0.0.1:${port}') or {
 		eprintln('Failed to start SOCKS5 proxy: ${err}')
@@ -1143,7 +1188,7 @@ fn start_socks5_proxy(port int, up_cfg WaveConfig, down_cfg WaveConfig, upstream
 	println('Lagger SOCKS5 proxy listening on port ${port}')
 	for {
 		mut client_conn := listener.accept() or { continue }
-		spawn handle_socks5(mut client_conn, up_cfg, down_cfg, upstream, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter)
+		spawn handle_socks5(mut client_conn, up_cfg, down_cfg, upstream, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar)
 	}
 }
 
@@ -1209,6 +1254,11 @@ fn main() {
 
 	mut model := new_clustering_model()
 	mut lag_configs := map[string]WaveConfig{}
+	
+	shared grammar := &SharedGrammar{
+		pair_counts: map[string]int{}
+		merge_rules: map[string]string{}
+	}
 
 	if load_path != '' {
 		println('Loading neural network weights and lag workspaces from ${load_path}...')
@@ -1222,10 +1272,14 @@ fn main() {
 		}
 		model = config.model
 		lag_configs = config.lag_configs.clone()
-		println('Model and ${lag_configs.len} state-specific lag workspaces loaded successfully!')
+		lock grammar {
+			grammar.merge_rules = config.merge_rules.clone()
+			grammar.pair_counts = config.pair_counts.clone()
+		}
+		println('Model, ${lag_configs.len} state-specific lag workspaces, and ${config.merge_rules.len} learned grammar rules loaded successfully!')
 	}
 
-	os.signal_opt(.int, fn [save_path, model, lag_configs] (_ os.Signal) {
+	os.signal_opt(.int, fn [save_path, model, lag_configs, grammar] (_ os.Signal) {
 		println('\n[SIGINT] Interrupted by user. Saving configuration to ${save_path}...')
 		
 		mut final_configs := lag_configs.clone()
@@ -1241,9 +1295,18 @@ fn main() {
 			}
 		}
 
+		mut saved_rules := map[string]string{}
+		mut saved_counts := map[string]int{}
+		lock grammar {
+			saved_rules = grammar.merge_rules.clone()
+			saved_counts = grammar.pair_counts.clone()
+		}
+
 		config := LaggerConfig{
 			model: model
 			lag_configs: final_configs
+			merge_rules: saved_rules
+			pair_counts: saved_counts
 		}
 
 		model_json := json.encode_pretty(config)
@@ -1251,7 +1314,7 @@ fn main() {
 			eprintln('Error saving model file: ${err}')
 			exit(1)
 		}
-		println('[SYSTEM] Saved model and customizable lag templates to ${save_path} successfully. Exiting.')
+		println('[SYSTEM] Saved model, customizable lag templates, and ${saved_rules.len} learned grammar rules to ${save_path} successfully. Exiting.')
 		exit(0)
 	}) or {
 		eprintln('Failed to register SIGINT handler: ${err}')
@@ -1341,11 +1404,11 @@ fn main() {
 
 	println('Starting Lagger Dynamic Latency & Behavior Analyzer')
 	if proto == 'tcp' {
-		start_tcp_proxy(port, target, up_cfg, down_cfg, upstream, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter)
+		start_tcp_proxy(port, target, up_cfg, down_cfg, upstream, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar)
 	} else if proto == 'udp' {
-		start_udp_proxy(port, target, up_cfg, down_cfg, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter)
+		start_udp_proxy(port, target, up_cfg, down_cfg, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar)
 	} else if proto == 'socks5' {
-		start_socks5_proxy(port, up_cfg, down_cfg, upstream, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter)
+		start_socks5_proxy(port, up_cfg, down_cfg, upstream, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar)
 	} else {
 		eprintln('Unknown protocol: ${proto}')
 	}
