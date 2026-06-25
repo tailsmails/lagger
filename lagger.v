@@ -50,6 +50,11 @@ mut:
 	addr_str string
 }
 
+struct ActiveCounter {
+mut:
+	count int
+}
+
 struct WaveConfig {
 mut:
 	min_lat        f64
@@ -247,7 +252,7 @@ fn (mut sc StateCompressor) add_state(new_state string) string {
 			sc.apply_merges()
 		}
 	}
-	
+
 	if sc.history.len > 1000 {
 		sc.history.delete(0)
 	}
@@ -593,9 +598,12 @@ fn get_dynamic_latency_physical(mut cfg WaveConfig, mut rng FastRng, packet_len 
 		return 0
 	}
 	base := get_dynamic_latency(mut cfg, mut rng)
-	bandwidth_bps := cfg.bandwidth_mbps * 1_000_000.0
-	packet_bits := f64(packet_len * 8)
-	transmission_delay := (packet_bits / bandwidth_bps) * 1000.0
+	mut transmission_delay := 0.0
+	if cfg.bandwidth_mbps > 0.0 {
+		bandwidth_bps := cfg.bandwidth_mbps * 1_000_000.0
+		packet_bits := f64(packet_len * 8)
+		transmission_delay = (packet_bits / bandwidth_bps) * 1000.0
+	}
 	mut pareto_noise := 0.0
 	if cfg.natural && rng.next_f64() < 0.15 {
 		pareto_noise = rand_pareto(mut rng, 2.0, 1.4)
@@ -603,6 +611,9 @@ fn get_dynamic_latency_physical(mut cfg WaveConfig, mut rng FastRng, packet_len 
 	total := base + transmission_delay + pareto_noise
 	if total < 5.0 {
 		return 5
+	}
+	if total > 5000.0 {
+		return 5000
 	}
 	return i64(math.round(total))
 }
@@ -636,7 +647,7 @@ fn (mut ta TrafficAnalyzer) add_packet(data []u8, target_addr string) {
 		}
 		count_to_delete++
 	}
-	
+
 	if count_to_delete > 0 {
 		ta.sliding_window.delete_many(0, count_to_delete)
 		if ta.intervals.len > ta.sliding_window.len {
@@ -818,6 +829,8 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 
 fn dial_socks5(socks5_addr string, target_addr string) !&net.TcpConn {
 	mut conn := net.dial_tcp(socks5_addr)!
+	conn.set_read_timeout(15 * time.second)
+	conn.set_write_timeout(15 * time.second)
 	conn.write([u8(0x05), 0x01, 0x00])!
 	mut buf := []u8{len: 2}
 	conn.read(mut buf)!
@@ -874,13 +887,17 @@ fn dial_target(target string, upstream string) !&net.TcpConn {
 	return net.dial_tcp(target)
 }
 
-fn send_udp_with_delay(mut conn &net.UdpConn, packet UdpChunk) {
+fn send_udp_with_delay(mut conn &net.UdpConn, packet UdpChunk, shared active_threads ActiveCounter) {
 	now := time.now().unix_milli()
 	remaining := packet.arrival_time - now
 	if remaining > 0 {
-		time.sleep(time.Duration(remaining) * time.millisecond)
+		sleep_dur := if remaining > 5000 { i64(5000) } else { remaining }
+		time.sleep(time.Duration(sleep_dur) * time.millisecond)
 	}
-	conn.write_to(packet.dest, packet.data) or { return }
+	conn.write_to(packet.dest, packet.data) or {}
+	lock active_threads {
+		active_threads.count--
+	}
 }
 
 fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig, target_addr string, direction string, mut analyzer &TrafficAnalyzer, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, morph_mode bool) {
@@ -1052,7 +1069,8 @@ fn write_tcp_delayed(mut dst &net.TcpConn, ch chan TcpChunk) {
 			if remaining <= 0 {
 				break
 			}
-			time.sleep(time.Duration(remaining) * time.millisecond)
+			sleep_dur := if remaining > 5000 { i64(5000) } else { remaining }
+			time.sleep(time.Duration(sleep_dur) * time.millisecond)
 		}
 		dst.write(chunk.data) or { break }
 	}
@@ -1065,6 +1083,9 @@ fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfi
 		client.close() or {}
 		return
 	}
+	server_conn.set_read_timeout(120 * time.second)
+	server_conn.set_write_timeout(120 * time.second)
+
 	ch_to_server := chan TcpChunk{cap: 1024}
 	ch_to_client := chan TcpChunk{cap: 1024}
 	mut server_ref := server_conn
@@ -1115,13 +1136,15 @@ fn start_tcp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 	println('Lagger TCP proxy listening on port ${port} forwarding to ${target}')
 	for {
 		mut client_conn := listener.accept() or { continue }
+		client_conn.set_read_timeout(120 * time.second)
+		client_conn.set_write_timeout(120 * time.second)
 		spawn handle_tcp_connection(mut client_conn, target, up_cfg, down_cfg, upstream,
 			shared cm, model, lag_configs, lag_states, conf_threshold, target_filter,
 			shared grammar, morph_mode)
 	}
 }
 
-fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &net.UdpConn, shared holder ClientAddrHolder, cfg WaveConfig, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar, morph_mode bool) {
+fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &net.UdpConn, shared holder ClientAddrHolder, cfg WaveConfig, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar, morph_mode bool, shared active_threads ActiveCounter) {
 	mut local_cfg := cfg
 	mut buf := []u8{len: 2048}
 	mut analyzer := TrafficAnalyzer{
@@ -1277,11 +1300,22 @@ fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &ne
 				if arrival <= now + 3 {
 					proxy_conn.write_to(dest, pkt_data) or {}
 				} else {
-					spawn send_udp_with_delay(mut proxy_conn, UdpChunk{
-						data:         pkt_data
-						dest:         dest
-						arrival_time: arrival
-					})
+					mut can_spawn := false
+					lock active_threads {
+						if active_threads.count < 100 {
+							active_threads.count++
+							can_spawn = true
+						}
+					}
+					if can_spawn {
+						spawn send_udp_with_delay(mut proxy_conn, UdpChunk{
+							data:         pkt_data
+							dest:         dest
+							arrival_time: arrival
+						}, shared active_threads)
+					} else {
+						proxy_conn.write_to(dest, pkt_data) or {}
+					}
 				}
 			}
 		}
@@ -1316,10 +1350,14 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 	}
 	dest := dest_addrs[0]
 
+	shared active_threads := &ActiveCounter{
+		count: 0
+	}
+
 	shared holder := &ClientAddrHolder{}
 	spawn forward_udp_server_to_client(mut target_conn, mut proxy_conn, shared holder,
 		down_cfg, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter,
-		shared grammar, morph_mode)
+		shared grammar, morph_mode, shared active_threads)
 	mut local_up_cfg := up_cfg
 	mut buf := []u8{len: 2048}
 	mut rng := new_fast_rng()
@@ -1462,13 +1500,40 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 			if arrival <= now + 3 {
 				target_conn.write_to(dest, pkt_data) or {}
 			} else {
-				spawn send_udp_with_delay(mut target_conn, UdpChunk{
-					data:         pkt_data
-					dest:         dest
-					arrival_time: arrival
-				})
+				mut can_spawn := false
+				lock active_threads {
+					if active_threads.count < 100 {
+						active_threads.count++
+						can_spawn = true
+					}
+				}
+				if can_spawn {
+					spawn send_udp_with_delay(mut target_conn, UdpChunk{
+						data:         pkt_data
+						dest:         dest
+						arrival_time: arrival
+					}, shared active_threads)
+				} else {
+					target_conn.write_to(dest, pkt_data) or {}
+				}
 			}
 		}
+	}
+}
+
+fn start_socks5_proxy(port int, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar, morph_mode bool) {
+	_ = port
+	mut listener := net.listen_tcp(.ip, '127.0.0.1:${port}') or {
+		eprintln('Failed to start SOCKS5 proxy: ${err}')
+		return
+	}
+	println('Lagger SOCKS5 proxy listening on port ${port}')
+	for {
+		mut client_conn := listener.accept() or { continue }
+		client_conn.set_read_timeout(120 * time.second)
+		client_conn.set_write_timeout(120 * time.second)
+		spawn handle_socks5(mut client_conn, up_cfg, down_cfg, upstream, shared cm, model,
+			lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
 	}
 }
 
@@ -1518,6 +1583,9 @@ fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig,
 		client.close() or {}
 		return
 	}
+	server_conn.set_read_timeout(120 * time.second)
+	server_conn.set_write_timeout(120 * time.second)
+
 	client.write([u8(0x05), 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]) or {
 		server_conn.close() or {}
 		client.close() or {}
@@ -1562,20 +1630,6 @@ fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig,
 	threads << spawn write_tcp_delayed(mut server_ref, ch_to_server)
 	threads << spawn write_tcp_delayed(mut &client, ch_to_client)
 	threads.wait()
-}
-
-fn start_socks5_proxy(port int, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar, morph_mode bool) {
-	_ = port
-	mut listener := net.listen_tcp(.ip, '127.0.0.1:${port}') or {
-		eprintln('Failed to start SOCKS5 proxy: ${err}')
-		return
-	}
-	println('Lagger SOCKS5 proxy listening on port ${port}')
-	for {
-		mut client_conn := listener.accept() or { continue }
-		spawn handle_socks5(mut client_conn, up_cfg, down_cfg, upstream, shared cm, model,
-			lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
-	}
 }
 
 fn parse_custom(s string) []f64 {
