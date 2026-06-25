@@ -19,6 +19,21 @@ import flag
 import rand
 import json
 
+const state_colors_list = [
+	'\x1b[38;5;34m',
+	'\x1b[38;5;39m',
+	'\x1b[38;5;208m',
+	'\x1b[38;5;198m',
+	'\x1b[38;5;46m',
+	'\x1b[38;5;21m',
+	'\x1b[38;5;165m',
+	'\x1b[38;5;226m',
+	'\x1b[38;5;51m',
+	'\x1b[38;5;93m',
+	'\x1b[38;5;202m',
+	'\x1b[38;5;129m'
+]
+
 struct TcpChunk {
 	data         []u8
 	arrival_time i64
@@ -79,6 +94,16 @@ fn new_clustering_model() ClusteringModel {
 	}
 }
 
+fn (m ClusteringModel) clone() ClusteringModel {
+	mut cloned := [][]f64{len: m.centroids.len}
+	for i in 0 .. m.centroids.len {
+		cloned[i] = m.centroids[i].clone()
+	}
+	return ClusteringModel{
+		centroids: cloned
+	}
+}
+
 fn (mut m ClusteringModel) predict_and_update(input []f64, learning_rate f64) (int, f64) {
 	mut min_dist := 1e9
 	mut winner := 0
@@ -114,7 +139,7 @@ mut:
 
 fn (t StateToken) str() string {
 	if t.count > 1 {
-		return '${t.state}n${t.count}'
+		return t.state + 'n' + t.count.str()
 	}
 	return t.state
 }
@@ -155,7 +180,7 @@ fn (mut sc StateCompressor) apply_merges() {
 	for i < sc.history.len - 1 {
 		p1 := sc.history[i].str()
 		p2 := sc.history[i + 1].str()
-		pair_key := '${p1}_${p2}'
+		pair_key := p1 + '_' + p2
 		
 		mut has_rule := false
 		mut merged := ''
@@ -198,7 +223,7 @@ fn (mut sc StateCompressor) add_state(new_state string) string {
 	if sc.history.len >= 2 {
 		p1 := sc.history[sc.history.len - 2].str()
 		p2 := sc.history[sc.history.len - 1].str()
-		pair_key := '${p1}_${p2}'
+		pair_key := p1 + '_' + p2
 
 		mut trigger_merge := false
 		mut merged_state := ''
@@ -206,14 +231,14 @@ fn (mut sc StateCompressor) add_state(new_state string) string {
 		lock g {
 			g.pair_counts[pair_key]++
 			if g.pair_counts[pair_key] >= sc.threshold && !(pair_key in g.merge_rules) {
-				merged_state = '${p1}+${p2}'
+				merged_state = p1 + '+' + p2
 				g.merge_rules[pair_key] = merged_state
 				trigger_merge = true
 			}
 		}
 
 		if trigger_merge {
-			println('\x1b[33m[State Merger] New structural grammar rule: ${p1} + ${p2} -> ${merged_state}\x1b[0m')
+			println('\x1b[33m[State Merger] New structural grammar rule: ' + p1 + ' + ' + p2 + ' -> ' + merged_state + '\x1b[0m')
 			sc.apply_merges()
 		}
 	}
@@ -242,21 +267,6 @@ mut:
 }
 
 fn (mut cm ColorManager) get_color(state string) string {
-	colors := [
-		'\x1b[38;5;34m',
-		'\x1b[38;5;39m',
-		'\x1b[38;5;208m',
-		'\x1b[38;5;198m',
-		'\x1b[38;5;46m',
-		'\x1b[38;5;21m',
-		'\x1b[38;5;165m',
-		'\x1b[38;5;226m',
-		'\x1b[38;5;51m',
-		'\x1b[38;5;93m',
-		'\x1b[38;5;202m',
-		'\x1b[38;5;129m'
-	]
-	
 	mut hash := 0
 	for c in state {
 		hash += int(c)
@@ -264,8 +274,8 @@ fn (mut cm ColorManager) get_color(state string) string {
 	if hash < 0 {
 		hash = -hash
 	}
-	idx := hash % colors.len
-	return colors[idx]
+	idx := hash % state_colors_list.len
+	return state_colors_list[idx]
 }
 
 struct TrafficAnalyzer {
@@ -317,17 +327,46 @@ fn deterministic_gaussian(step_ms i64) f64 {
 	return math.sqrt(-2.0 * math.log(safe_u1)) * math.cos(2.0 * math.pi * u2)
 }
 
-fn rand_gaussian() f64 {
-	mut u1 := rand.f64()
-	for u1 == 0.0 {
-		u1 = rand.f64()
+struct FastRng {
+mut:
+	state u64
+}
+
+fn new_fast_rng() FastRng {
+	return FastRng{
+		state: u64(time.now().unix_nano())
 	}
-	u2 := rand.f64()
+}
+
+fn (mut r FastRng) next_f64() f64 {
+	r.state += 0xa0761d6478bd642f
+	mut temp := r.state ^ (r.state >> 30)
+	temp *= 0xe7037ed1a0b428db
+	mut temp2 := temp ^ (temp >> 27)
+	temp2 *= 0x8ebc6af09c316535
+	val := temp2 ^ (temp2 >> 31)
+	return f64(val & 0xFFFFFFFFFFFF) / 281474976710656.0
+}
+
+fn (mut r FastRng) int_in_range(min int, max int) int {
+	if min >= max {
+		return min
+	}
+	f := r.next_f64()
+	return min + int(f * f64(max - min))
+}
+
+fn rand_gaussian(mut rng FastRng) f64 {
+	mut u1 := rng.next_f64()
+	for u1 == 0.0 {
+		u1 = rng.next_f64()
+	}
+	u2 := rng.next_f64()
 	return math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)
 }
 
-fn rand_pareto(minimum f64, alpha f64) f64 {
-	u := rand.f64()
+fn rand_pareto(mut rng FastRng, minimum f64, alpha f64) f64 {
+	u := rng.next_f64()
 	safe_u := if u == 0.0 { 0.0001 } else { u }
 	return minimum / math.pow(safe_u, 1.0 / alpha)
 }
@@ -343,7 +382,8 @@ fn calculate_jitter(intervals []i64) f64 {
 	mean := sum / f64(intervals.len)
 	mut variance_sum := 0.0
 	for val in intervals {
-		variance_sum += math.pow(f64(val) - mean, 2.0)
+		diff := f64(val) - mean
+		variance_sum += diff * diff
 	}
 	return math.sqrt(variance_sum / f64(intervals.len))
 }
@@ -356,14 +396,14 @@ fn calculate_entropy(data []u8) f64 {
 	for b in data {
 		counts[b]++
 	}
-	mut entropy := 0.0
+	mut sum := 0.0
 	len_f := f64(data.len)
 	for count in counts {
 		if count > 0 {
-			p := f64(count) / len_f
-			entropy -= p * math.log2(p)
+			sum += f64(count) * math.log2(f64(count))
 		}
 	}
+	entropy := math.log2(len_f) - (sum / len_f)
 	return entropy / 8.0 
 }
 
@@ -372,7 +412,7 @@ fn calculate_rolling_entropy_variance(data []u8) f64 {
 		return 0.0
 	}
 	chunk_size := 64
-	mut entropies := []f64{}
+	mut entropies := []f64{cap: 24}
 	for i := 0; i + chunk_size <= data.len; i += chunk_size {
 		entropies << calculate_entropy(data[i..i + chunk_size])
 	}
@@ -386,7 +426,8 @@ fn calculate_rolling_entropy_variance(data []u8) f64 {
 	mean := sum / f64(entropies.len)
 	mut var_sum := 0.0
 	for ent in entropies {
-		var_sum += math.pow(ent - mean, 2.0)
+		diff := ent - mean
+		var_sum += diff * diff
 	}
 	return math.sqrt(var_sum / f64(entropies.len))
 }
@@ -402,48 +443,47 @@ fn calculate_byte_uniformity(data []u8) f64 {
 	mean := f64(data.len) / 256.0
 	mut variance := 0.0
 	for count in counts {
-		variance += math.pow(f64(count) - mean, 2.0)
+		diff := f64(count) - mean
+		variance += diff * diff
 	}
 	norm_var := variance / f64(data.len)
 	return math.max(0.0, 1.0 - (norm_var / 12.0))
 }
 
-fn matches_filter(target_addr string, filter_str string) bool {
-	if filter_str == '' {
+fn matches_filter(target_addr string, filter_parts []string) bool {
+	if filter_parts.len == 0 {
 		return true
 	}
-	filter_parts := filter_str.split(',')
 	for part in filter_parts {
-		trimmed := part.trim_space()
-		if trimmed != '' && target_addr.contains(trimmed) {
+		if part != '' && target_addr.contains(part) {
 			return true
 		}
 	}
 	return false
 }
 
-fn should_drop(mut cfg WaveConfig) bool {
+fn should_drop(mut cfg WaveConfig, mut rng FastRng) bool {
 	if cfg.analyze_only {
 		return false
 	}
 	if !cfg.loss_enabled {
 		return false
 	}
-	r := rand.f64()
+	r := rng.next_f64()
 	if cfg.is_bad_state {
 		if r < 0.15 {
 			cfg.is_bad_state = false
 		}
-		return rand.f64() < 0.25
+		return rng.next_f64() < 0.25
 	} else {
 		if r < 0.01 {
 			cfg.is_bad_state = true
 		}
-		return rand.f64() < 0.002
+		return rng.next_f64() < 0.002
 	}
 }
 
-fn get_dynamic_latency(mut cfg WaveConfig) f64 {
+fn get_dynamic_latency(mut cfg WaveConfig, mut rng FastRng) f64 {
 	base := (cfg.max_lat + cfg.min_lat) / 2.0
 	amp := (cfg.max_lat - cfg.min_lat) / 2.0
 	period_ms := cfg.period * 1000.0
@@ -481,7 +521,7 @@ fn get_dynamic_latency(mut cfg WaveConfig) f64 {
 				clamped := math.max(0.0, math.min(1.0, noise_val))
 				val = cfg.min_lat + (cfg.max_lat - cfg.min_lat) * clamped
 			} else {
-				val = f64(rand.int_in_range(int(cfg.min_lat), int(cfg.max_lat)) or { int(cfg.min_lat) })
+				val = f64(rng.int_in_range(int(cfg.min_lat), int(cfg.max_lat)))
 			}
 		}
 		'pulse' {
@@ -520,7 +560,7 @@ fn get_dynamic_latency(mut cfg WaveConfig) f64 {
 			multiplier := if cfg.inverse { -1.0 } else { 1.0 }
 			random_variation = multiplier * raw_noise * cfg.jitter
 		} else {
-			random_variation = rand_gaussian() * cfg.jitter
+			random_variation = rand_gaussian(mut rng) * cfg.jitter
 		}
 		target_latency := val + random_variation
 		if cfg.last_lat == 0.0 {
@@ -533,17 +573,17 @@ fn get_dynamic_latency(mut cfg WaveConfig) f64 {
 	return val
 }
 
-fn get_dynamic_latency_physical(mut cfg WaveConfig, packet_len int) i64 {
+fn get_dynamic_latency_physical(mut cfg WaveConfig, mut rng FastRng, packet_len int) i64 {
 	if cfg.analyze_only {
 		return 0
 	}
-	base := get_dynamic_latency(mut cfg)
+	base := get_dynamic_latency(mut cfg, mut rng)
 	bandwidth_bps := cfg.bandwidth_mbps * 1_000_000.0
 	packet_bits := f64(packet_len * 8)
 	transmission_delay := (packet_bits / bandwidth_bps) * 1000.0
 	mut pareto_noise := 0.0
-	if cfg.natural && rand.f64() < 0.15 {
-		pareto_noise = rand_pareto(2.0, 1.4)
+	if cfg.natural && rng.next_f64() < 0.15 {
+		pareto_noise = rand_pareto(mut rng, 2.0, 1.4)
 	}
 	total := base + transmission_delay + pareto_noise
 	if total < 5.0 {
@@ -574,23 +614,31 @@ fn (mut ta TrafficAnalyzer) add_packet(data []u8, target_addr string) {
 	ta.bytes_accumulator += size
 	ta.sliding_window << now
 	
-	for ta.sliding_window.len > 0 && now - ta.sliding_window[0] > 1000 {
-		ta.sliding_window.delete(0)
+	mut count_to_delete := 0
+	for count_to_delete < ta.sliding_window.len {
+		if now - ta.sliding_window[count_to_delete] <= 1000 {
+			break
+		}
+		count_to_delete++
 	}
-	for ta.intervals.len > 0 && ta.intervals.len > ta.sliding_window.len {
-		ta.intervals.delete(0)
-	}
-	for ta.entropies.len > 0 && ta.entropies.len > ta.sliding_window.len {
-		ta.entropies.delete(0)
-	}
-	for ta.packet_sizes.len > 0 && ta.packet_sizes.len > ta.sliding_window.len {
-		ta.packet_sizes.delete(0)
-	}
-	for ta.rolling_entropy_vars.len > 0 && ta.rolling_entropy_vars.len > ta.sliding_window.len {
-		ta.rolling_entropy_vars.delete(0)
-	}
-	for ta.byte_uniformities.len > 0 && ta.byte_uniformities.len > ta.sliding_window.len {
-		ta.byte_uniformities.delete(0)
+
+	if count_to_delete > 0 {
+		ta.sliding_window.delete_many(0, count_to_delete)
+		if ta.intervals.len > ta.sliding_window.len {
+			ta.intervals.delete_many(0, ta.intervals.len - ta.sliding_window.len)
+		}
+		if ta.entropies.len > ta.sliding_window.len {
+			ta.entropies.delete_many(0, ta.entropies.len - ta.sliding_window.len)
+		}
+		if ta.packet_sizes.len > ta.sliding_window.len {
+			ta.packet_sizes.delete_many(0, ta.packet_sizes.len - ta.sliding_window.len)
+		}
+		if ta.rolling_entropy_vars.len > ta.sliding_window.len {
+			ta.rolling_entropy_vars.delete_many(0, ta.rolling_entropy_vars.len - ta.sliding_window.len)
+		}
+		if ta.byte_uniformities.len > ta.sliding_window.len {
+			ta.byte_uniformities.delete_many(0, ta.byte_uniformities.len - ta.sliding_window.len)
+		}
 	}
 	
 	if now - ta.last_print_time >= 500 {
@@ -623,7 +671,8 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 
 	mut sum_size_diff_sq := 0.0
 	for sz in ta.packet_sizes {
-		sum_size_diff_sq += math.pow(f64(sz) - avg_size, 2.0)
+		diff := f64(sz) - avg_size
+		sum_size_diff_sq += diff * diff
 	}
 	size_std_dev := if ta.packet_sizes.len > 0 { math.sqrt(sum_size_diff_sq / f64(ta.packet_sizes.len)) } else { 0.0 }
 	norm_size_std := math.min(1.0, size_std_dev / 500.0)
@@ -638,7 +687,8 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 
 	mut sum_entropy_diff_sq := 0.0
 	for ent in ta.entropies {
-		sum_entropy_diff_sq += math.pow(ent - avg_entropy, 2.0)
+		diff := ent - avg_entropy
+		sum_entropy_diff_sq += diff * diff
 	}
 	entropy_std_dev := if ta.entropies.len > 0 { math.sqrt(sum_entropy_diff_sq / f64(ta.entropies.len)) } else { 0.0 }
 	norm_entropy_std := math.min(1.0, entropy_std_dev / 0.5)
@@ -777,19 +827,15 @@ fn send_udp_with_delay(mut conn &net.UdpConn, packet UdpChunk) {
 		if remaining <= 0 {
 			break
 		}
-		if remaining > 2 {
-			time.sleep(time.Duration(remaining - 1) * time.millisecond)
-		} else {
-			for time.now().unix_milli() < packet.arrival_time {}
-			break
-		}
+		time.sleep(time.Duration(remaining) * time.millisecond)
 	}
 	conn.write_to(packet.dest, packet.data) or { return }
 }
 
-fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig, target_addr string, direction string, mut analyzer &TrafficAnalyzer, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string) {
+fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig, target_addr string, direction string, mut analyzer &TrafficAnalyzer, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string) {
 	mut local_cfg := cfg
 	mut buf := []u8{len: 4096}
+	mut rng := new_fast_rng()
 	for {
 		bytes_read := src.read(mut buf) or { break }
 		if bytes_read == 0 {
@@ -848,23 +894,37 @@ fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig, target_addr 
 			}
 		}
 
-		if should_drop(mut active_cfg) {
+		if should_drop(mut active_cfg, mut rng) {
 			continue
 		}
 		data := buf[..bytes_read].clone()
-		delay := get_dynamic_latency_physical(mut active_cfg, bytes_read)
+		delay := get_dynamic_latency_physical(mut active_cfg, mut rng, bytes_read)
 		arrival := time.now().unix_milli() + delay
 		
-		ch <- TcpChunk{ 
-			data:         data
-			arrival_time: arrival
+		mut pushed := false
+		for _ in 0 .. 100 {
+			res := ch.try_push(TcpChunk{ 
+				data:         data
+				arrival_time: arrival
+			})
+			if res == .success {
+				pushed = true
+				break
+			}
+			if res == .closed {
+				break
+			}
+			time.sleep(10 * time.millisecond)
+		}
+		if !pushed {
+			break
 		}
 	}
 	ch.close()
 	src.close() or {}
 }
 
-fn write_tcp_delayed(mut dst &net.TcpConn, ch chan TcpChunk) {
+fn write_tcp_delayed(mut dst &net.TcpConn, mut src &net.TcpConn, ch chan TcpChunk) {
 	for {
 		chunk := <-ch or { break }
 		for {
@@ -873,30 +933,26 @@ fn write_tcp_delayed(mut dst &net.TcpConn, ch chan TcpChunk) {
 			if remaining <= 0 {
 				break
 			}
-			if remaining > 2 {
-				time.sleep(time.Duration(remaining - 1) * time.millisecond)
-			} else {
-				for time.now().unix_milli() < chunk.arrival_time {}
-				break
-			}
+			time.sleep(time.Duration(remaining) * time.millisecond)
 		}
 		dst.write(chunk.data) or { break }
 	}
 	dst.close() or {}
+	src.close() or {}
 }
 
-fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string, shared grammar SharedGrammar) {
+fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar) {
 	mut server_conn := dial_target(target, upstream) or {
 		eprintln('[TCP] Failed to connect to server: ${err}')
 		client.close() or {}
 		return
 	}
-	ch_to_server := chan TcpChunk{}
-	ch_to_client := chan TcpChunk{}
+	ch_to_server := chan TcpChunk{cap: 1024}
+	ch_to_client := chan TcpChunk{cap: 1024}
 	mut server_ref := server_conn
 
 	mut analyzer_up := TrafficAnalyzer{
-		model: model
+		model: model.clone()
 		color_manager: cm
 		last_state: ''
 		last_confidence: 0.0
@@ -907,7 +963,7 @@ fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfi
 		}
 	}
 	mut analyzer_down := TrafficAnalyzer{
-		model: model
+		model: model.clone()
 		color_manager: cm
 		last_state: ''
 		last_confidence: 0.0
@@ -921,12 +977,12 @@ fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfi
 	mut threads := []thread{}
 	threads << spawn read_tcp(mut &client, ch_to_server, up_cfg, target, 'upstream', mut &analyzer_up, lag_configs, lag_states, conf_threshold, target_filter)
 	threads << spawn read_tcp(mut server_ref, ch_to_client, down_cfg, target, 'downstream', mut &analyzer_down, lag_configs, lag_states, conf_threshold, target_filter)
-	threads << spawn write_tcp_delayed(mut server_ref, ch_to_server)
-	threads << spawn write_tcp_delayed(mut &client, ch_to_client)
+	threads << spawn write_tcp_delayed(mut server_ref, mut &client, ch_to_server)
+	threads << spawn write_tcp_delayed(mut &client, mut server_ref, ch_to_client)
 	threads.wait()
 }
 
-fn start_tcp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string, shared grammar SharedGrammar) {
+fn start_tcp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar) {
 	_ = port
 	mut listener := net.listen_tcp(.ip, '127.0.0.1:${port}') or {
 		eprintln('Failed to start TCP proxy: ${err}')
@@ -939,11 +995,11 @@ fn start_tcp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 	}
 }
 
-fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &net.UdpConn, shared holder ClientAddrHolder, cfg WaveConfig, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string, shared grammar SharedGrammar) {
+fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &net.UdpConn, shared holder ClientAddrHolder, cfg WaveConfig, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar) {
 	mut local_cfg := cfg
 	mut buf := []u8{len: 2048}
 	mut analyzer := TrafficAnalyzer{
-		model: model
+		model: model.clone()
 		color_manager: cm
 		last_state: ''
 		last_confidence: 0.0
@@ -953,6 +1009,9 @@ fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &ne
 			grammar: grammar
 		}
 	}
+	mut rng := new_fast_rng()
+	mut last_dest_str := ''
+	mut cached_dest := net.Addr{}
 	for {
 		bytes_read, _ := target_conn.read(mut buf) or { continue }
 		if bytes_read == 0 {
@@ -1010,13 +1069,13 @@ fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &ne
 			}
 		}
 
-		if should_drop(mut active_cfg) {
+		if should_drop(mut active_cfg, mut rng) {
 			continue
 		}
 		packet_data := buf[..bytes_read].clone()
-		delay := get_dynamic_latency_physical(mut active_cfg, bytes_read)
+		delay := get_dynamic_latency_physical(mut active_cfg, mut rng, bytes_read)
 		mut arrival := time.now().unix_milli() + delay
-		if rand.f64() < 0.02 {
+		if rng.next_f64() < 0.02 {
 			arrival -= 8
 		}
 		mut dest_str := ''
@@ -1024,11 +1083,18 @@ fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &ne
 			dest_str = holder.addr_str
 		}
 		if dest_str != '' {
-			dest_addrs := net.resolve_addrs_fuzzy(dest_str, .udp) or { continue }
-			if dest_addrs.len == 0 {
-				continue
+			mut dest := net.Addr{}
+			if dest_str == last_dest_str {
+				dest = cached_dest
+			} else {
+				dest_addrs := net.resolve_addrs_fuzzy(dest_str, .udp) or { continue }
+				if dest_addrs.len == 0 {
+					continue
+				}
+				dest = dest_addrs[0]
+				last_dest_str = dest_str
+				cached_dest = dest
 			}
-			dest := dest_addrs[0]
 			spawn send_udp_with_delay(mut proxy_conn, UdpChunk{
 				data:         packet_data
 				dest:         dest
@@ -1038,7 +1104,7 @@ fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &ne
 	}
 }
 
-fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConfig, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string, shared grammar SharedGrammar) {
+fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConfig, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar) {
 	_ = port
 	mut proxy_conn := net.listen_udp('127.0.0.1:${port}') or {
 		eprintln('Failed to start UDP proxy: ${err}')
@@ -1055,10 +1121,22 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 	defer {
 		target_conn.close() or {}
 	}
+
+	dest_addrs := net.resolve_addrs_fuzzy(target, .udp) or {
+		eprintln('Failed to resolve UDP target: ${err}')
+		return
+	}
+	if dest_addrs.len == 0 {
+		eprintln('No addresses found for target ${target}')
+		return
+	}
+	dest := dest_addrs[0]
+
 	shared holder := &ClientAddrHolder{}
 	spawn forward_udp_server_to_client(mut target_conn, mut proxy_conn, shared holder, down_cfg, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar)
 	mut local_up_cfg := up_cfg
 	mut buf := []u8{len: 2048}
+	mut rng := new_fast_rng()
 	for {
 		bytes_read, client_addr := proxy_conn.read(mut buf) or { continue }
 		if bytes_read == 0 {
@@ -1066,7 +1144,7 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 		}
 		
 		mut active_up_cfg := local_up_cfg
-		if should_drop(mut active_up_cfg) {
+		if should_drop(mut active_up_cfg, mut rng) {
 			continue
 		}
 		
@@ -1075,16 +1153,12 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 			holder.addr_str = client_str
 		}
 		packet_data := buf[..bytes_read].clone()
-		delay := get_dynamic_latency_physical(mut active_up_cfg, bytes_read)
+		delay := get_dynamic_latency_physical(mut active_up_cfg, mut rng, bytes_read)
 		mut arrival := time.now().unix_milli() + delay
-		if rand.f64() < 0.02 {
+		if rng.next_f64() < 0.02 {
 			arrival -= 8
 		}
-		dest_addrs := net.resolve_addrs_fuzzy(target, .udp) or { continue }
-		if dest_addrs.len == 0 {
-			continue
-		}
-		dest := dest_addrs[0]
+		
 		spawn send_udp_with_delay(mut target_conn, UdpChunk{
 			data:         packet_data
 			dest:         dest
@@ -1093,7 +1167,7 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 	}
 }
 
-fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string, shared grammar SharedGrammar) {
+fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar) {
 	mut buf := []u8{len: 512}
 	bytes_read := client.read(mut buf) or { return }
 	if bytes_read < 2 || buf[0] != 0x05 {
@@ -1144,12 +1218,12 @@ fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig,
 		client.close() or {}
 		return
 	}
-	ch_to_server := chan TcpChunk{}
-	ch_to_client := chan TcpChunk{}
+	ch_to_server := chan TcpChunk{cap: 1024}
+	ch_to_client := chan TcpChunk{cap: 1024}
 	mut server_ref := server_conn
 
 	mut analyzer_up := TrafficAnalyzer{
-		model: model
+		model: model.clone()
 		color_manager: cm
 		last_state: ''
 		last_confidence: 0.0
@@ -1160,7 +1234,7 @@ fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig,
 		}
 	}
 	mut analyzer_down := TrafficAnalyzer{
-		model: model
+		model: model.clone()
 		color_manager: cm
 		last_state: ''
 		last_confidence: 0.0
@@ -1174,12 +1248,12 @@ fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig,
 	mut threads := []thread{}
 	threads << spawn read_tcp(mut &client, ch_to_server, up_cfg, target_addr, 'upstream', mut &analyzer_up, lag_configs, lag_states, conf_threshold, target_filter)
 	threads << spawn read_tcp(mut server_ref, ch_to_client, down_cfg, target_addr, 'downstream', mut &analyzer_down, lag_configs, lag_states, conf_threshold, target_filter)
-	threads << spawn write_tcp_delayed(mut server_ref, ch_to_server)
-	threads << spawn write_tcp_delayed(mut &client, ch_to_client)
+	threads << spawn write_tcp_delayed(mut server_ref, mut &client, ch_to_server)
+	threads << spawn write_tcp_delayed(mut &client, mut server_ref, ch_to_client)
 	threads.wait()
 }
 
-fn start_socks5_proxy(port int, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string, shared grammar SharedGrammar) {
+fn start_socks5_proxy(port int, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar) {
 	_ = port
 	mut listener := net.listen_tcp(.ip, '127.0.0.1:${port}') or {
 		eprintln('Failed to start SOCKS5 proxy: ${err}')
@@ -1244,12 +1318,22 @@ fn main() {
 	save_path := fp.string('save-model', `v`, 'model.lgr', 'Filename to save the neural network weights & lag configs when exiting')
 	conf_threshold := fp.float('conf-threshold', `c`, 0.0, 'Minimum neural network confidence percentage to trigger lag and display transitions (0 to 100)')
 	
-	target_filter := fp.string('target-filter', `t`, '', 'Only analyze/lag targets matching this comma-separated filter (e.g. "telegram,149.154")')
+	target_filter_raw := fp.string('target-filter', `t`, '', 'Only analyze/lag targets matching this comma-separated filter (e.g. "telegram,149.154")')
 
 	_ := fp.finalize() or {
 		eprintln(err)
 		println(fp.usage())
 		return
+	}
+
+	mut target_filter := []string{}
+	if target_filter_raw != '' {
+		for part in target_filter_raw.split(',') {
+			trimmed := part.trim_space()
+			if trimmed != '' {
+				target_filter << trimmed
+			}
+		}
 	}
 
 	mut model := new_clustering_model()
@@ -1333,8 +1417,8 @@ fn main() {
 		println('Confidence Filter enabled! Only lagging and printing analysis when Neural Network is at least ${conf_threshold}% confident.')
 	}
 
-	if target_filter != '' {
-		println('Target Filter enabled! Only analyzing and lagging domains/IPs matching: "${target_filter}"')
+	if target_filter_raw != '' {
+		println('Target Filter enabled! Only analyzing and lagging domains/IPs matching: "${target_filter_raw}"')
 	}
 
 	mut up_cfg := WaveConfig{
