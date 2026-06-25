@@ -16,7 +16,7 @@ import time
 import math
 import os
 import flag
-import rand
+// import rand
 import json
 
 const state_colors_list = [
