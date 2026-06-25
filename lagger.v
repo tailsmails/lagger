@@ -16,7 +16,7 @@ import time
 import math
 import os
 import flag
-// import rand
+import rand as _
 import json
 
 const state_colors_list = [
@@ -244,7 +244,7 @@ fn (mut sc StateCompressor) add_state(new_state string) string {
 	}
 	
 	if sc.history.len > 1000 {
-		sc.history.delete(0)
+		sc.history = sc.history[1..].clone()
 	}
 
 	if sc.history.len > 0 {
@@ -623,21 +623,21 @@ fn (mut ta TrafficAnalyzer) add_packet(data []u8, target_addr string) {
 	}
 
 	if count_to_delete > 0 {
-		ta.sliding_window.delete_many(0, count_to_delete)
+		ta.sliding_window = ta.sliding_window[count_to_delete..].clone()
 		if ta.intervals.len > ta.sliding_window.len {
-			ta.intervals.delete_many(0, ta.intervals.len - ta.sliding_window.len)
+			ta.intervals = ta.intervals[ta.intervals.len - ta.sliding_window.len..].clone()
 		}
 		if ta.entropies.len > ta.sliding_window.len {
-			ta.entropies.delete_many(0, ta.entropies.len - ta.sliding_window.len)
+			ta.entropies = ta.entropies[ta.entropies.len - ta.sliding_window.len..].clone()
 		}
 		if ta.packet_sizes.len > ta.sliding_window.len {
-			ta.packet_sizes.delete_many(0, ta.packet_sizes.len - ta.sliding_window.len)
+			ta.packet_sizes = ta.packet_sizes[ta.packet_sizes.len - ta.sliding_window.len..].clone()
 		}
 		if ta.rolling_entropy_vars.len > ta.sliding_window.len {
-			ta.rolling_entropy_vars.delete_many(0, ta.rolling_entropy_vars.len - ta.sliding_window.len)
+			ta.rolling_entropy_vars = ta.rolling_entropy_vars[ta.rolling_entropy_vars.len - ta.sliding_window.len..].clone()
 		}
 		if ta.byte_uniformities.len > ta.sliding_window.len {
-			ta.byte_uniformities.delete_many(0, ta.byte_uniformities.len - ta.sliding_window.len)
+			ta.byte_uniformities = ta.byte_uniformities[ta.byte_uniformities.len - ta.sliding_window.len..].clone()
 		}
 	}
 	
@@ -902,19 +902,16 @@ fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig, target_addr 
 		arrival := time.now().unix_milli() + delay
 		
 		mut pushed := false
-		for _ in 0 .. 100 {
-			res := ch.try_push(TcpChunk{ 
+		select {
+			ch <- TcpChunk{ 
 				data:         data
 				arrival_time: arrival
-			})
-			if res == .success {
+			} {
 				pushed = true
-				break
 			}
-			if res == .closed {
-				break
+			500 * time.millisecond {
+				// timeout
 			}
-			time.sleep(10 * time.millisecond)
 		}
 		if !pushed {
 			break
@@ -924,7 +921,7 @@ fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig, target_addr 
 	src.close() or {}
 }
 
-fn write_tcp_delayed(mut dst &net.TcpConn, mut src &net.TcpConn, ch chan TcpChunk) {
+fn write_tcp_delayed(mut dst &net.TcpConn, ch chan TcpChunk) {
 	for {
 		chunk := <-ch or { break }
 		for {
@@ -938,7 +935,6 @@ fn write_tcp_delayed(mut dst &net.TcpConn, mut src &net.TcpConn, ch chan TcpChun
 		dst.write(chunk.data) or { break }
 	}
 	dst.close() or {}
-	src.close() or {}
 }
 
 fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter []string, shared grammar SharedGrammar) {
@@ -977,8 +973,8 @@ fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfi
 	mut threads := []thread{}
 	threads << spawn read_tcp(mut &client, ch_to_server, up_cfg, target, 'upstream', mut &analyzer_up, lag_configs, lag_states, conf_threshold, target_filter)
 	threads << spawn read_tcp(mut server_ref, ch_to_client, down_cfg, target, 'downstream', mut &analyzer_down, lag_configs, lag_states, conf_threshold, target_filter)
-	threads << spawn write_tcp_delayed(mut server_ref, mut &client, ch_to_server)
-	threads << spawn write_tcp_delayed(mut &client, mut server_ref, ch_to_client)
+	threads << spawn write_tcp_delayed(mut server_ref, ch_to_server)
+	threads << spawn write_tcp_delayed(mut &client, ch_to_client)
 	threads.wait()
 }
 
@@ -1095,11 +1091,17 @@ fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &ne
 				last_dest_str = dest_str
 				cached_dest = dest
 			}
-			spawn send_udp_with_delay(mut proxy_conn, UdpChunk{
-				data:         packet_data
-				dest:         dest
-				arrival_time: arrival
-			})
+
+			now := time.now().unix_milli()
+			if arrival <= now {
+				proxy_conn.write_to(dest, packet_data) or {}
+			} else {
+				spawn send_udp_with_delay(mut proxy_conn, UdpChunk{
+					data:         packet_data
+					dest:         dest
+					arrival_time: arrival
+				})
+			}
 		}
 	}
 }
@@ -1159,11 +1161,16 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 			arrival -= 8
 		}
 		
-		spawn send_udp_with_delay(mut target_conn, UdpChunk{
-			data:         packet_data
-			dest:         dest
-			arrival_time: arrival
-		})
+		now := time.now().unix_milli()
+		if arrival <= now {
+			target_conn.write_to(dest, packet_data) or {}
+		} else {
+			spawn send_udp_with_delay(mut target_conn, UdpChunk{
+				data:         packet_data
+				dest:         dest
+				arrival_time: arrival
+			})
+		}
 	}
 }
 
@@ -1248,8 +1255,8 @@ fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig,
 	mut threads := []thread{}
 	threads << spawn read_tcp(mut &client, ch_to_server, up_cfg, target_addr, 'upstream', mut &analyzer_up, lag_configs, lag_states, conf_threshold, target_filter)
 	threads << spawn read_tcp(mut server_ref, ch_to_client, down_cfg, target_addr, 'downstream', mut &analyzer_down, lag_configs, lag_states, conf_threshold, target_filter)
-	threads << spawn write_tcp_delayed(mut server_ref, mut &client, ch_to_server)
-	threads << spawn write_tcp_delayed(mut &client, mut server_ref, ch_to_client)
+	threads << spawn write_tcp_delayed(mut server_ref, ch_to_server)
+	threads << spawn write_tcp_delayed(mut &client, ch_to_client)
 	threads.wait()
 }
 
