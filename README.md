@@ -5,6 +5,8 @@ lagger is a dynamic network latency, packet loss simulation, and side-channel be
 
 Unlike simple random-delay simulators, lagger utilizes statistical distributions, network state machines, and an **unsupervised competitive learning clustering engine** to segment and target traffic behaviors adaptively. By evaluating real-time temporal and payload features without decrypting packets, lagger can isolate specific traffic states (such as active streaming, chat messaging, or control signals) and apply customized network impairment profiles only when those behaviors are detected.
 
+Additionally, lagger supports **Active Traffic Morphing**, allowing it to reshape the size and pacing of a program's traffic to match the statistical profile of another recorded application in real-time.
+
 ---
 
 ## Technical Specifications
@@ -14,6 +16,14 @@ Unlike simple random-delay simulators, lagger utilizes statistical distributions
 *   **Layer 1/2 Serialization Delay:** Computes dynamic transmission overhead based on actual packet size (in bits) against a user-defined physical bandwidth limit (in Mbps), introducing realistic delay differences between small keep-alive packets and large data blocks.
 *   **Heavy-Tailed Queuing Delay (Pareto & Gaussian Jitter):** Simulates hardware-level routing congestion using the Pareto distribution alongside Box-Muller Gaussian jitter, recreating the occasional high-latency spikes (spikes/tails) seen in congested WAN routes.
 *   **Autocorrelation (EMA Filter):** Employs an Exponential Moving Average (EMA) to ensure consecutive packets experience correlated delays rather than independent, chaotic fluctuations, emulating the smooth latency drift of physical paths.
+
+### Active Traffic Morphing & High-Entropy Obfuscation
+When running in morphing mode, the proxy acts as a traffic shaper that reshapes packets to mimic the loaded behavior profiles without breaking application stability:
+*   **Cryptographic-Safe Padding:** Rather than using zero-padding (which reduces entropy and is easily flagged by DPI engines), lagger appends pseudo-random bytes generated on-the-fly (`FastRng.next_u8()`). This preserves a high-entropy profile indistinguishable from standard encrypted TLS streams.
+*   **Smart Segmentation:** Oversized TCP payloads are dynamically split to match target cluster sizes. To protect stream stability and prevent packet explosion, splits are capped at a minimum of 512 bytes and a maximum of 4 fragments per read.
+*   **Adaptive Packet Pacing:** Inter-packet arrival times are dynamically buffered and spaced to align with the target PPS (Packets Per Second) of the target state. A pacing cap of 500ms prevents infinite queue lag and connection dropouts.
+*   **Handshake Bypass Protection:** The first 15 packets of any connection bypass morphing and pacing. This allows critical connection-negotiation phases (e.g., SOCKS5 authentication, TLS Client/Server Hello) to establish natively before active shaping begins.
+*   **UDP Integrity Preservation:** UDP traffic is shaped strictly through high-entropy padding. Since splitting UDP datagrams degrades application payload structures, lagger bypasses fragmentation on UDP routes to maintain stability.
 
 ### Encrypted Content Side-Channel Analysis (11D Clustering)
 To bypass packet encryption and obfuscation without decryption, lagger extracts multi-layered side-channel features and projects them into an **11-Dimensional competitive learning space** (Mode 0 to Mode 11):
@@ -107,6 +117,7 @@ Start the proxy by specifying the protocol, port, target, and physical propertie
 *   `-g`, `--lag-on`: Only apply lag/loss on these comma-separated states (e.g., `--lag-on 2,3`). Bypasses lagging on any unlisted state.
 *   `-c`, `--conf-threshold`: Minimum clustering model confidence percentage required to trigger lagging **and** gate transition analysis printing (0.0 to 100.0, defaults to `0.0`). Filtering out low-confidence state transitions eliminates boundary noise.
 *   `-t`, `--target-filter`: Comma-separated filter of target domains or IPs (e.g., `telegram,149.154`). Only analyzes and lags matching hosts, letting other background sockets bypass the proxy unhindered.
+*   `-X`, `--morph`: Enables active traffic morphing. When a model is loaded, this actively shapes packet sizes (using high-entropy random padding or controlled segmentation) and paces packet intervals to match the loaded behavior profile while maintaining read-only model classification.
 
 ---
 
@@ -183,10 +194,10 @@ Open the generated `my_profile.lgr` file in any text editor. You will see the le
 }
 ```
 
-### Step 3: Run Targeted Lagging
-Start lagger with your customized model. It will dynamically read the workspaces, lagging Mode 2 and Mode 3 differently while bypassing Mode 0, 1, and others:
+### Step 3: Run Active Traffic Morphing
+To actively shape the traffic of a target program to look like the recorded behavioral profile of the loaded model:
 ```bash
-./lagger --proto socks5 --port 1080 --load-model my_profile.lgr --target-filter "149.154" --conf-threshold 90.0
+./lagger --proto socks5 --port 1080 --load-model my_profile.lgr --target-filter "149.154" --morph --conf-threshold 90.0
 ```
 
 ---
