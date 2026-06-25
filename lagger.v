@@ -1,15 +1,15 @@
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU General Public License as published by
-//    the Free Software Foundation, either version 3 of the License, or
-//    (at your option) any later version.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU General Public License for more details.
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
 //
-//    You should have received a copy of the GNU General Public License
-//    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see https://www.gnu.org/licenses/.
 
 import net
 import time
@@ -31,7 +31,7 @@ const state_colors_list = [
 	'\x1b[38;5;51m',
 	'\x1b[38;5;93m',
 	'\x1b[38;5;202m',
-	'\x1b[38;5;129m'
+	'\x1b[38;5;129m',
 ]
 
 struct TcpChunk {
@@ -77,16 +77,16 @@ mut:
 
 fn new_clustering_model() ClusteringModel {
 	mut centroids := [][]f64{len: 12}
-	centroids[0]  = [0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00]
-	centroids[1]  = [0.01, 0.05, 0.05, 0.85, 0.02, 0.01, 0.02, 0.05, 0.10, 0.05, 0.90]
-	centroids[2]  = [0.08, 0.12, 0.40, 0.88, 0.15, 0.05, 0.05, 0.20, 0.25, 0.15, 0.80]
-	centroids[3]  = [0.85, 0.95, 0.05, 0.98, 0.05, 0.90, 0.01, 0.02, 0.95, 0.02, 0.99]
-	centroids[4]  = [0.55, 0.35, 0.60, 0.92, 0.25, 0.20, 0.10, 0.35, 0.40, 0.10, 0.75]
-	centroids[5]  = [0.05, 0.80, 0.00, 0.95, 0.10, 0.75, 0.02, 0.05, 0.80, 0.05, 0.98]
-	centroids[6]  = [0.25, 0.15, 0.75, 0.86, 0.30, 0.10, 0.15, 0.45, 0.20, 0.25, 0.70]
-	centroids[7]  = [0.90, 0.10, 0.25, 0.95, 0.05, 0.02, 0.03, 0.10, 0.10, 0.05, 0.95]
-	centroids[8]  = [0.02, 0.30, 0.20, 0.90, 0.12, 0.15, 0.08, 0.15, 0.30, 0.10, 0.85]
-	centroids[9]  = [0.40, 0.70, 0.30, 0.95, 0.20, 0.60, 0.05, 0.25, 0.70, 0.08, 0.95]
+	centroids[0] = [0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00]
+	centroids[1] = [0.01, 0.05, 0.05, 0.85, 0.02, 0.01, 0.02, 0.05, 0.10, 0.05, 0.90]
+	centroids[2] = [0.08, 0.12, 0.40, 0.88, 0.15, 0.05, 0.05, 0.20, 0.25, 0.15, 0.80]
+	centroids[3] = [0.85, 0.95, 0.05, 0.98, 0.05, 0.90, 0.01, 0.02, 0.95, 0.02, 0.99]
+	centroids[4] = [0.55, 0.35, 0.60, 0.92, 0.25, 0.20, 0.10, 0.35, 0.40, 0.10, 0.75]
+	centroids[5] = [0.05, 0.80, 0.00, 0.95, 0.10, 0.75, 0.02, 0.05, 0.80, 0.05, 0.98]
+	centroids[6] = [0.25, 0.15, 0.75, 0.86, 0.30, 0.10, 0.15, 0.45, 0.20, 0.25, 0.70]
+	centroids[7] = [0.90, 0.10, 0.25, 0.95, 0.05, 0.02, 0.03, 0.10, 0.10, 0.05, 0.95]
+	centroids[8] = [0.02, 0.30, 0.20, 0.90, 0.12, 0.15, 0.08, 0.15, 0.30, 0.10, 0.85]
+	centroids[9] = [0.40, 0.70, 0.30, 0.95, 0.20, 0.60, 0.05, 0.25, 0.70, 0.08, 0.95]
 	centroids[10] = [0.30, 0.10, 0.90, 0.85, 0.35, 0.05, 0.18, 0.50, 0.15, 0.30, 0.65]
 	centroids[11] = [0.70, 0.50, 0.50, 0.95, 0.22, 0.45, 0.08, 0.30, 0.50, 0.12, 0.88]
 	return ClusteringModel{
@@ -154,7 +154,7 @@ struct StateCompressor {
 mut:
 	history   []StateToken
 	threshold int = 3
-	grammar   shared SharedGrammar
+	grammar   SharedGrammar
 }
 
 fn (mut sc StateCompressor) squash() {
@@ -181,7 +181,7 @@ fn (mut sc StateCompressor) apply_merges() {
 		p1 := sc.history[i].str()
 		p2 := sc.history[i + 1].str()
 		pair_key := p1 + '_' + p2
-		
+
 		mut has_rule := false
 		mut merged := ''
 		shared g := sc.grammar
@@ -229,22 +229,27 @@ fn (mut sc StateCompressor) add_state(new_state string) string {
 		mut merged_state := ''
 		shared g := sc.grammar
 		lock g {
-			g.pair_counts[pair_key]++
-			if g.pair_counts[pair_key] >= sc.threshold && !(pair_key in g.merge_rules) {
-				merged_state = p1 + '+' + p2
-				g.merge_rules[pair_key] = merged_state
-				trigger_merge = true
+			if g.pair_counts.len < 5000 && g.merge_rules.len < 5000 {
+				g.pair_counts[pair_key]++
+				if g.pair_counts[pair_key] >= sc.threshold && !(pair_key in g.merge_rules) {
+					if p1.len + p2.len < 100 {
+						merged_state = p1 + '+' + p2
+						g.merge_rules[pair_key] = merged_state
+						trigger_merge = true
+					}
+				}
 			}
 		}
 
 		if trigger_merge {
-			println('\x1b[33m[State Merger] New structural grammar rule: ' + p1 + ' + ' + p2 + ' -> ' + merged_state + '\x1b[0m')
+			println('\x1b[33m[State Merger] New structural grammar rule: ' + p1 + ' + '
+				+ p2 + ' -> ' + merged_state + '\x1b[0m')
 			sc.apply_merges()
 		}
 	}
 	
 	if sc.history.len > 1000 {
-		sc.history = sc.history[1..].clone()
+		sc.history.delete(0)
 	}
 
 	if sc.history.len > 0 {
@@ -280,24 +285,24 @@ fn (mut cm ColorManager) get_color(state string) string {
 
 struct TrafficAnalyzer {
 mut:
-	last_packet_time  i64
-	last_print_time   i64
-	packet_count      int
-	bytes_accumulator int
-	sliding_window    []i64
-	intervals         []i64
-	entropies         []f64
-	packet_sizes      []int
-	rolling_entropy_vars []f64
-	byte_uniformities    []f64
-	model             ClusteringModel
-	color_manager     shared ColorManager
-	last_state        string
-	last_winner       int
-	last_confidence   f64
-	conf_threshold    f64
-	compressor        StateCompressor
-	morph_mode        bool
+	last_packet_time         i64
+	last_print_time          i64
+	packet_count             int
+	bytes_accumulator        int
+	sliding_window           []i64
+	intervals                []i64
+	entropies                []f64
+	packet_sizes             []int
+	rolling_entropy_vars     []f64
+	byte_uniformities        []f64
+	model                    ClusteringModel
+	color_manager            shared ColorManager
+	last_state               string
+	last_winner              int
+	last_confidence          f64
+	conf_threshold           f64
+	compressor               StateCompressor
+	morph_mode               bool
 }
 
 fn is_ip_str(s string) bool {
@@ -414,7 +419,7 @@ fn calculate_entropy(data []u8) f64 {
 		}
 	}
 	entropy := math.log2(len_f) - (sum / len_f)
-	return entropy / 8.0 
+	return entropy / 8.0
 }
 
 fn calculate_rolling_entropy_variance(data []u8) f64 {
@@ -623,7 +628,7 @@ fn (mut ta TrafficAnalyzer) add_packet(data []u8, target_addr string) {
 	ta.packet_count++
 	ta.bytes_accumulator += size
 	ta.sliding_window << now
-	
+
 	mut count_to_delete := 0
 	for count_to_delete < ta.sliding_window.len {
 		if now - ta.sliding_window[count_to_delete] <= 1000 {
@@ -631,26 +636,26 @@ fn (mut ta TrafficAnalyzer) add_packet(data []u8, target_addr string) {
 		}
 		count_to_delete++
 	}
-
+	
 	if count_to_delete > 0 {
-		ta.sliding_window = ta.sliding_window[count_to_delete..].clone()
+		ta.sliding_window.delete_many(0, count_to_delete)
 		if ta.intervals.len > ta.sliding_window.len {
-			ta.intervals = ta.intervals[ta.intervals.len - ta.sliding_window.len..].clone()
+			ta.intervals.delete_many(0, ta.intervals.len - ta.sliding_window.len)
 		}
 		if ta.entropies.len > ta.sliding_window.len {
-			ta.entropies = ta.entropies[ta.entropies.len - ta.sliding_window.len..].clone()
+			ta.entropies.delete_many(0, ta.entropies.len - ta.sliding_window.len)
 		}
 		if ta.packet_sizes.len > ta.sliding_window.len {
-			ta.packet_sizes = ta.packet_sizes[ta.packet_sizes.len - ta.sliding_window.len..].clone()
+			ta.packet_sizes.delete_many(0, ta.packet_sizes.len - ta.sliding_window.len)
 		}
 		if ta.rolling_entropy_vars.len > ta.sliding_window.len {
-			ta.rolling_entropy_vars = ta.rolling_entropy_vars[ta.rolling_entropy_vars.len - ta.sliding_window.len..].clone()
+			ta.rolling_entropy_vars.delete_many(0, ta.rolling_entropy_vars.len - ta.sliding_window.len)
 		}
 		if ta.byte_uniformities.len > ta.sliding_window.len {
-			ta.byte_uniformities = ta.byte_uniformities[ta.byte_uniformities.len - ta.sliding_window.len..].clone()
+			ta.byte_uniformities.delete_many(0, ta.byte_uniformities.len - ta.sliding_window.len)
 		}
 	}
-	
+
 	if now - ta.last_print_time >= 500 {
 		ta.analyze_state(target_addr)
 		ta.last_print_time = now
@@ -670,7 +675,11 @@ fn (mut ta TrafficAnalyzer) add_packet(data []u8, target_addr string) {
 
 fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 	pps := f64(ta.sliding_window.len)
-	avg_size := if ta.packet_count > 0 { f64(ta.bytes_accumulator) / f64(ta.packet_count) } else { 0.0 }
+	avg_size := if ta.packet_count > 0 {
+		f64(ta.bytes_accumulator) / f64(ta.packet_count)
+	} else {
+		0.0
+	}
 	jitter := calculate_jitter(ta.intervals)
 
 	mut sum_entropy := 0.0
@@ -684,7 +693,11 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 		diff := f64(sz) - avg_size
 		sum_size_diff_sq += diff * diff
 	}
-	size_std_dev := if ta.packet_sizes.len > 0 { math.sqrt(sum_size_diff_sq / f64(ta.packet_sizes.len)) } else { 0.0 }
+	size_std_dev := if ta.packet_sizes.len > 0 {
+		math.sqrt(sum_size_diff_sq / f64(ta.packet_sizes.len))
+	} else {
+		0.0
+	}
 	norm_size_std := math.min(1.0, size_std_dev / 500.0)
 
 	mut large_packet_count := 0
@@ -693,14 +706,22 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 			large_packet_count++
 		}
 	}
-	large_ratio := if ta.packet_sizes.len > 0 { f64(large_packet_count) / f64(ta.packet_sizes.len) } else { 0.0 }
+	large_ratio := if ta.packet_sizes.len > 0 {
+		f64(large_packet_count) / f64(ta.packet_sizes.len)
+	} else {
+		0.0
+	}
 
 	mut sum_entropy_diff_sq := 0.0
 	for ent in ta.entropies {
 		diff := ent - avg_entropy
 		sum_entropy_diff_sq += diff * diff
 	}
-	entropy_std_dev := if ta.entropies.len > 0 { math.sqrt(sum_entropy_diff_sq / f64(ta.entropies.len)) } else { 0.0 }
+	entropy_std_dev := if ta.entropies.len > 0 {
+		math.sqrt(sum_entropy_diff_sq / f64(ta.entropies.len))
+	} else {
+		0.0
+	}
 	norm_entropy_std := math.min(1.0, entropy_std_dev / 0.5)
 
 	mut short_interval_count := 0
@@ -709,7 +730,11 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 			short_interval_count++
 		}
 	}
-	burst_ratio := if ta.intervals.len > 0 { f64(short_interval_count) / f64(ta.intervals.len) } else { 0.0 }
+	burst_ratio := if ta.intervals.len > 0 {
+		f64(short_interval_count) / f64(ta.intervals.len)
+	} else {
+		0.0
+	}
 
 	mut block_aligned_count := 0
 	for sz in ta.packet_sizes {
@@ -717,20 +742,32 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 			block_aligned_count++
 		}
 	}
-	block_align_ratio := if ta.packet_sizes.len > 0 { f64(block_aligned_count) / f64(ta.packet_sizes.len) } else { 0.0 }
+	block_align_ratio := if ta.packet_sizes.len > 0 {
+		f64(block_aligned_count) / f64(ta.packet_sizes.len)
+	} else {
+		0.0
+	}
 
 	mut sum_rev := 0.0
 	for rev in ta.rolling_entropy_vars {
 		sum_rev += rev
 	}
-	avg_rolling_entropy_var := if ta.rolling_entropy_vars.len > 0 { sum_rev / f64(ta.rolling_entropy_vars.len) } else { 0.0 }
+	avg_rolling_entropy_var := if ta.rolling_entropy_vars.len > 0 {
+		sum_rev / f64(ta.rolling_entropy_vars.len)
+	} else {
+		0.0
+	}
 	norm_rolling_entropy_var := math.min(1.0, avg_rolling_entropy_var / 0.4)
 
 	mut sum_uni := 0.0
 	for uni in ta.byte_uniformities {
 		sum_uni += uni
 	}
-	avg_byte_uniformity := if ta.byte_uniformities.len > 0 { sum_uni / f64(ta.byte_uniformities.len) } else { 0.0 }
+	avg_byte_uniformity := if ta.byte_uniformities.len > 0 {
+		sum_uni / f64(ta.byte_uniformities.len)
+	} else {
+		0.0
+	}
 
 	norm_pps := math.min(1.0, pps / 120.0)
 	norm_size := math.min(1.0, avg_size / 1500.0)
@@ -747,10 +784,16 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 		burst_ratio,
 		block_align_ratio,
 		norm_rolling_entropy_var,
-		avg_byte_uniformity
+		avg_byte_uniformity,
 	]
 
-	learning_rate := if ta.morph_mode { 0.0 } else if ta.last_state == '' { 0.1 } else { 0.02 }
+	learning_rate := if ta.morph_mode {
+		0.0
+	} else if ta.last_state == '' {
+		0.1
+	} else {
+		0.02
+	}
 	winner, confidence := ta.model.predict_and_update(input, learning_rate)
 
 	ta.last_confidence = confidence
@@ -832,12 +875,9 @@ fn dial_target(target string, upstream string) !&net.TcpConn {
 }
 
 fn send_udp_with_delay(mut conn &net.UdpConn, packet UdpChunk) {
-	for {
-		now := time.now().unix_milli()
-		remaining := packet.arrival_time - now
-		if remaining <= 0 {
-			break
-		}
+	now := time.now().unix_milli()
+	remaining := packet.arrival_time - now
+	if remaining > 0 {
 		time.sleep(time.Duration(remaining) * time.millisecond)
 	}
 	conn.write_to(packet.dest, packet.data) or { return }
@@ -920,10 +960,10 @@ fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig, target_addr 
 			target_size := int(analyzer.model.centroids[analyzer.last_winner][1] * 1500.0)
 			mut safe_target_size := target_size
 			if safe_target_size < 512 {
-				safe_target_size = 512 
+				safe_target_size = 512
 			}
 			if safe_target_size > 1460 {
-				safe_target_size = 1460 
+				safe_target_size = 1460
 			}
 
 			data := buf[..bytes_read].clone()
@@ -984,7 +1024,7 @@ fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig, target_addr 
 
 			mut pushed := false
 			select {
-				ch <- TcpChunk{ 
+				ch <- TcpChunk{
 					data:         pkt_data
 					arrival_time: arrival
 				} {
@@ -1030,35 +1070,37 @@ fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfi
 	mut server_ref := server_conn
 
 	mut analyzer_up := TrafficAnalyzer{
-		model: model.clone()
-		color_manager: cm
-		last_state: ''
-		last_winner: 0
+		model:           model.clone()
+		color_manager:   cm
+		last_state:      ''
+		last_winner:     0
 		last_confidence: 0.0
-		conf_threshold: conf_threshold
-		compressor: StateCompressor{
+		conf_threshold:  conf_threshold
+		compressor:      StateCompressor{
 			threshold: 3
-			grammar: grammar
+			grammar:   grammar
 		}
-		morph_mode: morph_mode
+		morph_mode:      morph_mode
 	}
 	mut analyzer_down := TrafficAnalyzer{
-		model: model.clone()
-		color_manager: cm
-		last_state: ''
-		last_winner: 0
+		model:           model.clone()
+		color_manager:   cm
+		last_state:      ''
+		last_winner:     0
 		last_confidence: 0.0
-		conf_threshold: conf_threshold
-		compressor: StateCompressor{
+		conf_threshold:  conf_threshold
+		compressor:      StateCompressor{
 			threshold: 3
-			grammar: grammar
+			grammar:   grammar
 		}
-		morph_mode: morph_mode
+		morph_mode:      morph_mode
 	}
 
 	mut threads := []thread{}
-	threads << spawn read_tcp(mut &client, ch_to_server, up_cfg, target, 'upstream', mut &analyzer_up, lag_configs, lag_states, conf_threshold, target_filter, morph_mode)
-	threads << spawn read_tcp(mut server_ref, ch_to_client, down_cfg, target, 'downstream', mut &analyzer_down, lag_configs, lag_states, conf_threshold, target_filter, morph_mode)
+	threads << spawn read_tcp(mut &client, ch_to_server, up_cfg, target, 'upstream', mut
+		&analyzer_up, lag_configs, lag_states, conf_threshold, target_filter, morph_mode)
+	threads << spawn read_tcp(mut server_ref, ch_to_client, down_cfg, target, 'downstream', mut
+		&analyzer_down, lag_configs, lag_states, conf_threshold, target_filter, morph_mode)
 	threads << spawn write_tcp_delayed(mut server_ref, ch_to_server)
 	threads << spawn write_tcp_delayed(mut &client, ch_to_client)
 	threads.wait()
@@ -1073,7 +1115,9 @@ fn start_tcp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 	println('Lagger TCP proxy listening on port ${port} forwarding to ${target}')
 	for {
 		mut client_conn := listener.accept() or { continue }
-		spawn handle_tcp_connection(mut client_conn, target, up_cfg, down_cfg, upstream, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
+		spawn handle_tcp_connection(mut client_conn, target, up_cfg, down_cfg, upstream,
+			shared cm, model, lag_configs, lag_states, conf_threshold, target_filter,
+			shared grammar, morph_mode)
 	}
 }
 
@@ -1081,17 +1125,17 @@ fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &ne
 	mut local_cfg := cfg
 	mut buf := []u8{len: 2048}
 	mut analyzer := TrafficAnalyzer{
-		model: model.clone()
-		color_manager: cm
-		last_state: ''
-		last_winner: 0
+		model:           model.clone()
+		color_manager:   cm
+		last_state:      ''
+		last_winner:     0
 		last_confidence: 0.0
-		conf_threshold: conf_threshold
-		compressor: StateCompressor{
+		conf_threshold:  conf_threshold
+		compressor:      StateCompressor{
 			threshold: 3
-			grammar: grammar
+			grammar:   grammar
 		}
-		morph_mode: morph_mode
+		morph_mode:      morph_mode
 	}
 	mut rng := new_fast_rng()
 	mut last_dest_str := ''
@@ -1110,7 +1154,7 @@ fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &ne
 		if is_matched {
 			analyzer.add_packet(buf[..bytes_read], 'UDP_Downstream_Server')
 		}
-		
+
 		mut active_cfg := local_cfg
 		state_str := analyzer.last_state
 
@@ -1230,7 +1274,7 @@ fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &ne
 				}
 
 				now := time.now().unix_milli()
-				if arrival <= now {
+				if arrival <= now + 3 {
 					proxy_conn.write_to(dest, pkt_data) or {}
 				} else {
 					spawn send_udp_with_delay(mut proxy_conn, UdpChunk{
@@ -1273,23 +1317,25 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 	dest := dest_addrs[0]
 
 	shared holder := &ClientAddrHolder{}
-	spawn forward_udp_server_to_client(mut target_conn, mut proxy_conn, shared holder, down_cfg, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
+	spawn forward_udp_server_to_client(mut target_conn, mut proxy_conn, shared holder,
+		down_cfg, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter,
+		shared grammar, morph_mode)
 	mut local_up_cfg := up_cfg
 	mut buf := []u8{len: 2048}
 	mut rng := new_fast_rng()
 
 	mut analyzer := TrafficAnalyzer{
-		model: model.clone()
-		color_manager: cm
-		last_state: ''
-		last_winner: 0
+		model:           model.clone()
+		color_manager:   cm
+		last_state:      ''
+		last_winner:     0
 		last_confidence: 0.0
-		conf_threshold: conf_threshold
-		compressor: StateCompressor{
+		conf_threshold:  conf_threshold
+		compressor:      StateCompressor{
 			threshold: 3
-			grammar: grammar
+			grammar:   grammar
 		}
-		morph_mode: morph_mode
+		morph_mode:      morph_mode
 	}
 	mut next_send_time := time.now().unix_milli()
 	mut packet_index := 0
@@ -1301,7 +1347,7 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 		}
 		packet_index++
 		is_handshake := packet_index < 15
-		
+
 		is_matched := matches_filter('UDP_Upstream_Client', target_filter)
 		if is_matched {
 			analyzer.add_packet(buf[..bytes_read], 'UDP_Upstream_Client')
@@ -1356,7 +1402,7 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 		if should_drop(mut active_up_cfg, mut rng) {
 			continue
 		}
-		
+
 		client_str := client_addr.str()
 		lock holder {
 			holder.addr_str = client_str
@@ -1411,9 +1457,9 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 				arrival = next_send_time + delay
 				next_send_time += interval
 			}
-			
+
 			now := time.now().unix_milli()
-			if arrival <= now {
+			if arrival <= now + 3 {
 				target_conn.write_to(dest, pkt_data) or {}
 			} else {
 				spawn send_udp_with_delay(mut target_conn, UdpChunk{
@@ -1482,35 +1528,37 @@ fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig,
 	mut server_ref := server_conn
 
 	mut analyzer_up := TrafficAnalyzer{
-		model: model.clone()
-		color_manager: cm
-		last_state: ''
-		last_winner: 0
+		model:           model.clone()
+		color_manager:   cm
+		last_state:      ''
+		last_winner:     0
 		last_confidence: 0.0
-		conf_threshold: conf_threshold
-		compressor: StateCompressor{
+		conf_threshold:  conf_threshold
+		compressor:      StateCompressor{
 			threshold: 3
-			grammar: grammar
+			grammar:   grammar
 		}
-		morph_mode: morph_mode
+		morph_mode:      morph_mode
 	}
 	mut analyzer_down := TrafficAnalyzer{
-		model: model.clone()
-		color_manager: cm
-		last_state: ''
-		last_winner: 0
+		model:           model.clone()
+		color_manager:   cm
+		last_state:      ''
+		last_winner:     0
 		last_confidence: 0.0
-		conf_threshold: conf_threshold
-		compressor: StateCompressor{
+		conf_threshold:  conf_threshold
+		compressor:      StateCompressor{
 			threshold: 3
-			grammar: grammar
+			grammar:   grammar
 		}
-		morph_mode: morph_mode
+		morph_mode:      morph_mode
 	}
 
 	mut threads := []thread{}
-	threads << spawn read_tcp(mut &client, ch_to_server, up_cfg, target_addr, 'upstream', mut &analyzer_up, lag_configs, lag_states, conf_threshold, target_filter, morph_mode)
-	threads << spawn read_tcp(mut server_ref, ch_to_client, down_cfg, target_addr, 'downstream', mut &analyzer_down, lag_configs, lag_states, conf_threshold, target_filter, morph_mode)
+	threads << spawn read_tcp(mut &client, ch_to_server, up_cfg, target_addr, 'upstream', mut
+		&analyzer_up, lag_configs, lag_states, conf_threshold, target_filter, morph_mode)
+	threads << spawn read_tcp(mut server_ref, ch_to_client, down_cfg, target_addr, 'downstream', mut
+		&analyzer_down, lag_configs, lag_states, conf_threshold, target_filter, morph_mode)
 	threads << spawn write_tcp_delayed(mut server_ref, ch_to_server)
 	threads << spawn write_tcp_delayed(mut &client, ch_to_client)
 	threads.wait()
@@ -1525,7 +1573,8 @@ fn start_socks5_proxy(port int, up_cfg WaveConfig, down_cfg WaveConfig, upstream
 	println('Lagger SOCKS5 proxy listening on port ${port}')
 	for {
 		mut client_conn := listener.accept() or { continue }
-		spawn handle_socks5(mut client_conn, up_cfg, down_cfg, upstream, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
+		spawn handle_socks5(mut client_conn, up_cfg, down_cfg, upstream, shared cm, model,
+			lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
 	}
 }
 
@@ -1577,10 +1626,10 @@ fn main() {
 	analyze_mode := fp.bool('analyze', `a`, false, 'Run in analyze-only mode (no lag/loss, prints states)')
 	load_path := fp.string('load-model', `f`, '', 'Path to a .lgr JSON file to load neural network weights & lag configs')
 	lag_on_str := fp.string('lag-on', `g`, '', 'Only apply lag/loss on these comma-separated states (e.g. "2,3")')
-	
+
 	save_path := fp.string('save-model', `v`, 'model.lgr', 'Filename to save the neural network weights & lag configs when exiting')
 	conf_threshold := fp.float('conf-threshold', `c`, 0.0, 'Minimum neural network confidence percentage to trigger lag and display transitions (0 to 100)')
-	
+
 	target_filter_raw := fp.string('target-filter', `t`, '', 'Only analyze/lag targets matching this comma-separated filter (e.g. "telegram,149.154")')
 	morph_mode := fp.bool('morph', `X`, false, 'Morph traffic sizes and timing to match the loaded model')
 
@@ -1602,7 +1651,7 @@ fn main() {
 
 	mut model := new_clustering_model()
 	mut lag_configs := map[string]WaveConfig{}
-	
+
 	shared grammar := &SharedGrammar{
 		pair_counts: map[string]int{}
 		merge_rules: map[string]string{}
@@ -1629,16 +1678,16 @@ fn main() {
 
 	os.signal_opt(.int, fn [save_path, model, lag_configs, grammar] (_ os.Signal) {
 		println('\n[SIGINT] Interrupted by user. Saving configuration to ${save_path}...')
-		
+
 		mut final_configs := lag_configs.clone()
 		if final_configs.len == 0 {
 			final_configs['3'] = WaveConfig{
-				min_lat: 100.0
-				max_lat: 300.0
-				pattern: 'sine'
-				period: 5.0
-				natural: true
-				jitter: 15.0
+				min_lat:      100.0
+				max_lat:      300.0
+				pattern:      'sine'
+				period:       5.0
+				natural:      true
+				jitter:       15.0
 				loss_enabled: true
 			}
 		}
@@ -1651,7 +1700,7 @@ fn main() {
 		}
 
 		config := LaggerConfig{
-			model: model
+			model:       model
 			lag_configs: final_configs
 			merge_rules: saved_rules
 			pair_counts: saved_counts
@@ -1760,11 +1809,15 @@ fn main() {
 
 	println('Starting Lagger Dynamic Latency & Behavior Analyzer')
 	if proto == 'tcp' {
-		start_tcp_proxy(port, target, up_cfg, down_cfg, upstream, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
+		start_tcp_proxy(port, target, up_cfg, down_cfg, upstream, shared color_manager,
+			model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar,
+			morph_mode)
 	} else if proto == 'udp' {
-		start_udp_proxy(port, target, up_cfg, down_cfg, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
+		start_udp_proxy(port, target, up_cfg, down_cfg, shared color_manager, model,
+			lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
 	} else if proto == 'socks5' {
-		start_socks5_proxy(port, up_cfg, down_cfg, upstream, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
+		start_socks5_proxy(port, up_cfg, down_cfg, upstream, shared color_manager, model,
+			lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
 	} else {
 		eprintln('Unknown protocol: ${proto}')
 	}
