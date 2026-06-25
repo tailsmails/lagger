@@ -1,9 +1,23 @@
+//    This program is free software: you can redistribute it and/or modify
+//    it under the terms of the GNU General Public License as published by
+//    the Free Software Foundation, either version 3 of the License, or
+//    (at your option) any later version.
+//
+//    This program is distributed in the hope that it will be useful,
+//    but WITHOUT ANY WARRANTY; without even the implied warranty of
+//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//    GNU General Public License for more details.
+//
+//    You should have received a copy of the GNU General Public License
+//    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 import net
 import time
 import math
 import os
 import flag
 import rand
+import json
 
 struct TcpChunk {
 	data         []u8
@@ -22,11 +36,11 @@ mut:
 }
 
 struct WaveConfig {
-	min_lat      f64
-	max_lat      f64
-	sync         bool
-	sync_inverse bool
 mut:
+	min_lat        f64
+	max_lat        f64
+	sync           bool
+	sync_inverse   bool
 	pattern        string
 	period         f64
 	custom         []f64
@@ -38,6 +52,215 @@ mut:
 	is_bad_state   bool
 	loss_enabled   bool
 	bandwidth_mbps f64
+	analyze_only   bool
+}
+
+struct ClusteringModel {
+mut:
+	centroids [][]f64
+}
+
+fn new_clustering_model() ClusteringModel {
+	mut centroids := [][]f64{len: 12}
+	centroids[0]  = [0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00]
+	centroids[1]  = [0.01, 0.05, 0.05, 0.85, 0.02, 0.01, 0.02, 0.05, 0.10, 0.05, 0.90]
+	centroids[2]  = [0.08, 0.12, 0.40, 0.88, 0.15, 0.05, 0.05, 0.20, 0.25, 0.15, 0.80]
+	centroids[3]  = [0.85, 0.95, 0.05, 0.98, 0.05, 0.90, 0.01, 0.02, 0.95, 0.02, 0.99]
+	centroids[4]  = [0.55, 0.35, 0.60, 0.92, 0.25, 0.20, 0.10, 0.35, 0.40, 0.10, 0.75]
+	centroids[5]  = [0.05, 0.80, 0.00, 0.95, 0.10, 0.75, 0.02, 0.05, 0.80, 0.05, 0.98]
+	centroids[6]  = [0.25, 0.15, 0.75, 0.86, 0.30, 0.10, 0.15, 0.45, 0.20, 0.25, 0.70]
+	centroids[7]  = [0.90, 0.10, 0.25, 0.95, 0.05, 0.02, 0.03, 0.10, 0.10, 0.05, 0.95]
+	centroids[8]  = [0.02, 0.30, 0.20, 0.90, 0.12, 0.15, 0.08, 0.15, 0.30, 0.10, 0.85]
+	centroids[9]  = [0.40, 0.70, 0.30, 0.95, 0.20, 0.60, 0.05, 0.25, 0.70, 0.08, 0.95]
+	centroids[10] = [0.30, 0.10, 0.90, 0.85, 0.35, 0.05, 0.18, 0.50, 0.15, 0.30, 0.65]
+	centroids[11] = [0.70, 0.50, 0.50, 0.95, 0.22, 0.45, 0.08, 0.30, 0.50, 0.12, 0.88]
+	return ClusteringModel{
+		centroids: centroids
+	}
+}
+
+fn (mut m ClusteringModel) predict_and_update(input []f64, learning_rate f64) (int, f64) {
+	mut min_dist := 1e9
+	mut winner := 0
+
+	for i in 0 .. 12 {
+		mut dist := 0.0
+		for j in 0 .. 11 {
+			diff := input[j] - m.centroids[i][j]
+			dist += diff * diff
+		}
+		dist = math.sqrt(dist)
+		if dist < min_dist {
+			min_dist = dist
+			winner = i
+		}
+	}
+
+	if learning_rate > 0.0 {
+		for j in 0 .. 11 {
+			m.centroids[winner][j] += learning_rate * (input[j] - m.centroids[winner][j])
+		}
+	}
+	
+	confidence := math.exp(-min_dist * 0.33) * 100.0
+	return winner, confidence
+}
+
+struct StateToken {
+mut:
+	state string
+	count int
+}
+
+fn (t StateToken) str() string {
+	if t.count > 1 {
+		return '${t.state}n${t.count}'
+	}
+	return t.state
+}
+
+struct StateCompressor {
+mut:
+	history     []StateToken
+	pair_counts map[string]int
+	merge_rules map[string]string
+	threshold   int = 3
+}
+
+fn (mut sc StateCompressor) squash() {
+	if sc.history.len < 2 {
+		return
+	}
+	mut i := 0
+	for i < sc.history.len - 1 {
+		if sc.history[i].state == sc.history[i + 1].state {
+			sc.history[i].count += sc.history[i + 1].count
+			sc.history.delete(i + 1)
+		} else {
+			i++
+		}
+	}
+}
+
+fn (mut sc StateCompressor) apply_merges() {
+	if sc.history.len < 2 {
+		return
+	}
+	mut i := 0
+	for i < sc.history.len - 1 {
+		p1 := sc.history[i].str()
+		p2 := sc.history[i + 1].str()
+		pair_key := '${p1}_${p2}'
+		if pair_key in sc.merge_rules {
+			merged := sc.merge_rules[pair_key]
+			sc.history[i] = StateToken{
+				state: merged
+				count: 1
+			}
+			sc.history.delete(i + 1)
+			if i > 0 {
+				i--
+			}
+		} else {
+			i++
+		}
+	}
+	sc.squash()
+}
+
+fn (mut sc StateCompressor) add_state(new_state string) string {
+	if sc.history.len > 0 && sc.history[sc.history.len - 1].state == new_state {
+		sc.history[sc.history.len - 1].count++
+	} else {
+		sc.history << StateToken{
+			state: new_state
+			count: 1
+		}
+	}
+
+	sc.apply_merges()
+
+	if sc.history.len >= 2 {
+		p1 := sc.history[sc.history.len - 2].str()
+		p2 := sc.history[sc.history.len - 1].str()
+		pair_key := '${p1}_${p2}'
+
+		sc.pair_counts[pair_key]++
+
+		if sc.pair_counts[pair_key] >= sc.threshold && !(pair_key in sc.merge_rules) {
+			merged_state := '${p1}+${p2}'
+			sc.merge_rules[pair_key] = merged_state
+			println('\x1b[33m[State Merger] New structural grammar rule: ${p1} + ${p2} -> ${merged_state}\x1b[0m')
+			sc.apply_merges()
+		}
+	}
+
+	if sc.history.len > 100 {
+		sc.history.delete(0)
+	}
+
+	if sc.history.len > 0 {
+		return sc.history[sc.history.len - 1].str()
+	}
+	return new_state
+}
+
+struct ColorManager {
+mut:
+	state_colors map[string]string
+}
+
+struct LaggerConfig {
+mut:
+	model       ClusteringModel
+	lag_configs map[string]WaveConfig
+}
+
+fn (mut cm ColorManager) get_color(state string) string {
+	colors := [
+		'\x1b[38;5;34m',
+		'\x1b[38;5;39m',
+		'\x1b[38;5;208m',
+		'\x1b[38;5;198m',
+		'\x1b[38;5;46m',
+		'\x1b[38;5;21m',
+		'\x1b[38;5;165m',
+		'\x1b[38;5;226m',
+		'\x1b[38;5;51m',
+		'\x1b[38;5;93m',
+		'\x1b[38;5;202m',
+		'\x1b[38;5;129m'
+	]
+	
+	mut hash := 0
+	for c in state {
+		hash += int(c)
+	}
+	if hash < 0 {
+		hash = -hash
+	}
+	idx := hash % colors.len
+	return colors[idx]
+}
+
+struct TrafficAnalyzer {
+mut:
+	last_packet_time  i64
+	last_print_time   i64
+	packet_count      int
+	bytes_accumulator int
+	sliding_window    []i64
+	intervals         []i64
+	entropies         []f64
+	packet_sizes      []int
+	rolling_entropy_vars []f64
+	byte_uniformities    []f64
+	model             ClusteringModel
+	color_manager     shared ColorManager
+	last_state        string
+	last_confidence   f64
+	conf_threshold    f64
+	compressor        StateCompressor
 }
 
 fn is_ip_str(s string) bool {
@@ -84,7 +307,100 @@ fn rand_pareto(minimum f64, alpha f64) f64 {
 	return minimum / math.pow(safe_u, 1.0 / alpha)
 }
 
+fn calculate_jitter(intervals []i64) f64 {
+	if intervals.len < 2 {
+		return 0.0
+	}
+	mut sum := 0.0
+	for val in intervals {
+		sum += f64(val)
+	}
+	mean := sum / f64(intervals.len)
+	mut variance_sum := 0.0
+	for val in intervals {
+		variance_sum += math.pow(f64(val) - mean, 2.0)
+	}
+	return math.sqrt(variance_sum / f64(intervals.len))
+}
+
+fn calculate_entropy(data []u8) f64 {
+	if data.len == 0 {
+		return 0.0
+	}
+	mut counts := [256]int{}
+	for b in data {
+		counts[b]++
+	}
+	mut entropy := 0.0
+	len_f := f64(data.len)
+	for count in counts {
+		if count > 0 {
+			p := f64(count) / len_f
+			entropy -= p * math.log2(p)
+		}
+	}
+	return entropy / 8.0 
+}
+
+fn calculate_rolling_entropy_variance(data []u8) f64 {
+	if data.len < 128 {
+		return 0.0
+	}
+	chunk_size := 64
+	mut entropies := []f64{}
+	for i := 0; i + chunk_size <= data.len; i += chunk_size {
+		entropies << calculate_entropy(data[i..i + chunk_size])
+	}
+	if entropies.len < 2 {
+		return 0.0
+	}
+	mut sum := 0.0
+	for ent in entropies {
+		sum += ent
+	}
+	mean := sum / f64(entropies.len)
+	mut var_sum := 0.0
+	for ent in entropies {
+		var_sum += math.pow(ent - mean, 2.0)
+	}
+	return math.sqrt(var_sum / f64(entropies.len))
+}
+
+fn calculate_byte_uniformity(data []u8) f64 {
+	if data.len < 16 {
+		return 0.0
+	}
+	mut counts := [256]int{}
+	for b in data {
+		counts[b]++
+	}
+	mean := f64(data.len) / 256.0
+	mut variance := 0.0
+	for count in counts {
+		variance += math.pow(f64(count) - mean, 2.0)
+	}
+	norm_var := variance / f64(data.len)
+	return math.max(0.0, 1.0 - (norm_var / 12.0))
+}
+
+fn matches_filter(target_addr string, filter_str string) bool {
+	if filter_str == '' {
+		return true
+	}
+	filter_parts := filter_str.split(',')
+	for part in filter_parts {
+		trimmed := part.trim_space()
+		if trimmed != '' && target_addr.contains(trimmed) {
+			return true
+		}
+	}
+	return false
+}
+
 fn should_drop(mut cfg WaveConfig) bool {
+	if cfg.analyze_only {
+		return false
+	}
 	if !cfg.loss_enabled {
 		return false
 	}
@@ -193,12 +509,13 @@ fn get_dynamic_latency(mut cfg WaveConfig) f64 {
 }
 
 fn get_dynamic_latency_physical(mut cfg WaveConfig, packet_len int) i64 {
+	if cfg.analyze_only {
+		return 0
+	}
 	base := get_dynamic_latency(mut cfg)
-	
 	bandwidth_bps := cfg.bandwidth_mbps * 1_000_000.0
 	packet_bits := f64(packet_len * 8)
 	transmission_delay := (packet_bits / bandwidth_bps) * 1000.0
-	
 	mut pareto_noise := 0.0
 	if cfg.natural && rand.f64() < 0.15 {
 		pareto_noise = rand_pareto(2.0, 1.4)
@@ -208,6 +525,166 @@ fn get_dynamic_latency_physical(mut cfg WaveConfig, packet_len int) i64 {
 		return 5
 	}
 	return i64(math.round(total))
+}
+
+fn (mut ta TrafficAnalyzer) add_packet(data []u8, target_addr string) {
+	now := time.now().unix_milli()
+	size := data.len
+
+	packet_entropy := calculate_entropy(data)
+	ta.entropies << packet_entropy
+	ta.packet_sizes << size
+	
+	p_roll_var := calculate_rolling_entropy_variance(data)
+	ta.rolling_entropy_vars << p_roll_var
+
+	p_uniform := calculate_byte_uniformity(data)
+	ta.byte_uniformities << p_uniform
+
+	if ta.sliding_window.len > 0 {
+		interval := now - ta.sliding_window[ta.sliding_window.len - 1]
+		ta.intervals << interval
+	}
+	ta.packet_count++
+	ta.bytes_accumulator += size
+	ta.sliding_window << now
+	
+	for ta.sliding_window.len > 0 && now - ta.sliding_window[0] > 1000 {
+		ta.sliding_window.delete(0)
+	}
+	for ta.intervals.len > 0 && ta.intervals.len > ta.sliding_window.len {
+		ta.intervals.delete(0)
+	}
+	for ta.entropies.len > 0 && ta.entropies.len > ta.sliding_window.len {
+		ta.entropies.delete(0)
+	}
+	for ta.packet_sizes.len > 0 && ta.packet_sizes.len > ta.sliding_window.len {
+		ta.packet_sizes.delete(0)
+	}
+	for ta.rolling_entropy_vars.len > 0 && ta.rolling_entropy_vars.len > ta.sliding_window.len {
+		ta.rolling_entropy_vars.delete(0)
+	}
+	for ta.byte_uniformities.len > 0 && ta.byte_uniformities.len > ta.sliding_window.len {
+		ta.byte_uniformities.delete(0)
+	}
+	
+	if now - ta.last_print_time >= 500 {
+		ta.analyze_state(target_addr)
+		ta.last_print_time = now
+	}
+
+	if now - ta.last_packet_time > 1000 {
+		ta.bytes_accumulator = size
+		ta.packet_count = 1
+		ta.intervals.clear()
+		ta.entropies.clear()
+		ta.packet_sizes.clear()
+		ta.rolling_entropy_vars.clear()
+		ta.byte_uniformities.clear()
+		ta.last_packet_time = now
+	}
+}
+
+fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
+	pps := f64(ta.sliding_window.len)
+	avg_size := if ta.packet_count > 0 { f64(ta.bytes_accumulator) / f64(ta.packet_count) } else { 0.0 }
+	jitter := calculate_jitter(ta.intervals)
+
+	mut sum_entropy := 0.0
+	for ent in ta.entropies {
+		sum_entropy += ent
+	}
+	avg_entropy := if ta.entropies.len > 0 { sum_entropy / f64(ta.entropies.len) } else { 0.0 }
+
+	mut sum_size_diff_sq := 0.0
+	for sz in ta.packet_sizes {
+		sum_size_diff_sq += math.pow(f64(sz) - avg_size, 2.0)
+	}
+	size_std_dev := if ta.packet_sizes.len > 0 { math.sqrt(sum_size_diff_sq / f64(ta.packet_sizes.len)) } else { 0.0 }
+	norm_size_std := math.min(1.0, size_std_dev / 500.0)
+
+	mut large_packet_count := 0
+	for sz in ta.packet_sizes {
+		if sz > 1200 {
+			large_packet_count++
+		}
+	}
+	large_ratio := if ta.packet_sizes.len > 0 { f64(large_packet_count) / f64(ta.packet_sizes.len) } else { 0.0 }
+
+	mut sum_entropy_diff_sq := 0.0
+	for ent in ta.entropies {
+		sum_entropy_diff_sq += math.pow(ent - avg_entropy, 2.0)
+	}
+	entropy_std_dev := if ta.entropies.len > 0 { math.sqrt(sum_entropy_diff_sq / f64(ta.entropies.len)) } else { 0.0 }
+	norm_entropy_std := math.min(1.0, entropy_std_dev / 0.5)
+
+	mut short_interval_count := 0
+	for val in ta.intervals {
+		if val < 8 {
+			short_interval_count++
+		}
+	}
+	burst_ratio := if ta.intervals.len > 0 { f64(short_interval_count) / f64(ta.intervals.len) } else { 0.0 }
+	
+	mut block_aligned_count := 0
+	for sz in ta.packet_sizes {
+		if sz > 0 && sz % 16 == 0 {
+			block_aligned_count++
+		}
+	}
+	block_align_ratio := if ta.packet_sizes.len > 0 { f64(block_aligned_count) / f64(ta.packet_sizes.len) } else { 0.0 }
+
+	mut sum_rev := 0.0
+	for rev in ta.rolling_entropy_vars {
+		sum_rev += rev
+	}
+	avg_rolling_entropy_var := if ta.rolling_entropy_vars.len > 0 { sum_rev / f64(ta.rolling_entropy_vars.len) } else { 0.0 }
+	norm_rolling_entropy_var := math.min(1.0, avg_rolling_entropy_var / 0.4)
+
+	mut sum_uni := 0.0
+	for uni in ta.byte_uniformities {
+		sum_uni += uni
+	}
+	avg_byte_uniformity := if ta.byte_uniformities.len > 0 { sum_uni / f64(ta.byte_uniformities.len) } else { 0.0 }
+
+	norm_pps := math.min(1.0, pps / 120.0)
+	norm_size := math.min(1.0, avg_size / 1500.0)
+	norm_jitter := math.min(1.0, jitter / 500.0)
+	
+	input := [
+		norm_pps,
+		norm_size,
+		norm_jitter,
+		avg_entropy,
+		norm_size_std,
+		large_ratio,
+		norm_entropy_std,
+		burst_ratio,
+		block_align_ratio,
+		norm_rolling_entropy_var,
+		avg_byte_uniformity
+	]
+
+	learning_rate := if ta.last_state == '' { 0.1 } else { 0.02 }
+	winner, confidence := ta.model.predict_and_update(input, learning_rate)
+
+	ta.last_confidence = confidence
+
+	if confidence >= ta.conf_threshold {
+		compressed_state := ta.compressor.add_state(winner.str())
+
+		if compressed_state != ta.last_state {
+			ta.last_state = compressed_state
+
+			shared cm := ta.color_manager
+			mut color := ''
+			lock cm {
+				color = cm.get_color(compressed_state)
+			}
+
+			println('${color}[State Transition] ${target_addr} -> Mode ${compressed_state} (Conf: ${int(ta.last_confidence)}%) | Stats -> PPS: ${int(pps)} size: ${int(avg_size)}B jitter: ${int(jitter)}ms entropy: ${avg_entropy:.2f}\x1b[0m')
+		}
+	}
 }
 
 fn dial_socks5(socks5_addr string, target_addr string) !&net.TcpConn {
@@ -268,39 +745,24 @@ fn dial_target(target string, upstream string) !&net.TcpConn {
 	return net.dial_tcp(target)
 }
 
-fn start_tcp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string) {
-	_ = port
-	mut listener := net.listen_tcp(.ip, '127.0.0.1:${port}') or {
-		eprintln('Failed to start TCP proxy: ${err}')
-		return
-	}
-	println('Lagger TCP proxy listening on port ${port} forwarding to ${target}')
+fn send_udp_with_delay(mut conn &net.UdpConn, packet UdpChunk) {
 	for {
-		mut client_conn := listener.accept() or { continue }
-		println('[TCP] Connection accepted.')
-		spawn handle_tcp_connection(mut client_conn, target, up_cfg, down_cfg, upstream)
+		now := time.now().unix_milli()
+		remaining := packet.arrival_time - now
+		if remaining <= 0 {
+			break
+		}
+		if remaining > 2 {
+			time.sleep(time.Duration(remaining - 1) * time.millisecond)
+		} else {
+			for time.now().unix_milli() < packet.arrival_time {}
+			break
+		}
 	}
+	conn.write_to(packet.dest, packet.data) or { return }
 }
 
-fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string) {
-	mut server_conn := dial_target(target, upstream) or {
-		eprintln('[TCP] Failed to connect to server: ${err}')
-		client.close() or {}
-		return
-	}
-	ch_to_server := chan TcpChunk{}
-	ch_to_client := chan TcpChunk{}
-	mut server_ref := server_conn
-
-	mut threads := []thread{}
-	threads << spawn read_tcp(mut &client, ch_to_server, up_cfg)
-	threads << spawn read_tcp(mut server_ref, ch_to_client, down_cfg)
-	threads << spawn write_tcp_delayed(mut server_ref, ch_to_server)
-	threads << spawn write_tcp_delayed(mut &client, ch_to_client)
-	threads.wait()
-}
-
-fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig) {
+fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig, target_addr string, direction string, mut analyzer &TrafficAnalyzer, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string) {
 	mut local_cfg := cfg
 	mut buf := []u8{len: 4096}
 	for {
@@ -308,11 +770,64 @@ fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig) {
 		if bytes_read == 0 {
 			break
 		}
-		if should_drop(mut local_cfg) {
+
+		is_matched := matches_filter(target_addr, target_filter)
+
+		if is_matched && direction == 'downstream' {
+			analyzer.add_packet(buf[..bytes_read], target_addr)
+		}
+
+		mut active_cfg := local_cfg
+
+		if !is_matched {
+			active_cfg.min_lat = 0
+			active_cfg.max_lat = 0
+			active_cfg.loss_enabled = false
+		} else {
+			mut should_apply_lag := true
+			if analyzer.last_confidence < conf_threshold {
+				should_apply_lag = false
+			}
+
+			if should_apply_lag {
+				if lag_configs.len > 0 {
+					state_str := analyzer.last_state
+					if state_str in lag_configs {
+						active_cfg = lag_configs[state_str]
+						if local_cfg.analyze_only {
+							active_cfg.analyze_only = true
+						}
+					} else {
+						active_cfg.min_lat = 0
+						active_cfg.max_lat = 0
+						active_cfg.loss_enabled = false
+					}
+				} else if lag_states.len > 0 {
+					mut matches := false
+					for ls in lag_states {
+						if analyzer.last_state == ls || analyzer.last_state.contains(ls) {
+							matches = true
+							break
+						}
+					}
+					if !matches {
+						active_cfg.min_lat = 0
+						active_cfg.max_lat = 0
+						active_cfg.loss_enabled = false
+					}
+				}
+			} else {
+				active_cfg.min_lat = 0
+				active_cfg.max_lat = 0
+				active_cfg.loss_enabled = false
+			}
+		}
+
+		if should_drop(mut active_cfg) {
 			continue
 		}
 		data := buf[..bytes_read].clone()
-		delay := get_dynamic_latency_physical(mut local_cfg, bytes_read)
+		delay := get_dynamic_latency_physical(mut active_cfg, bytes_read)
 		arrival := time.now().unix_milli() + delay
 		
 		ch <- TcpChunk{ 
@@ -345,72 +860,124 @@ fn write_tcp_delayed(mut dst &net.TcpConn, ch chan TcpChunk) {
 	dst.close() or {}
 }
 
-fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConfig) {
+fn handle_tcp_connection(mut client net.TcpConn, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string) {
+	mut server_conn := dial_target(target, upstream) or {
+		eprintln('[TCP] Failed to connect to server: ${err}')
+		client.close() or {}
+		return
+	}
+	ch_to_server := chan TcpChunk{}
+	ch_to_client := chan TcpChunk{}
+	mut server_ref := server_conn
+
+	mut analyzer_up := TrafficAnalyzer{
+		model: model
+		color_manager: cm
+		last_state: ''
+		last_confidence: 0.0
+		conf_threshold: conf_threshold
+	}
+	mut analyzer_down := TrafficAnalyzer{
+		model: model
+		color_manager: cm
+		last_state: ''
+		last_confidence: 0.0
+		conf_threshold: conf_threshold
+	}
+
+	mut threads := []thread{}
+	threads << spawn read_tcp(mut &client, ch_to_server, up_cfg, target, 'upstream', mut &analyzer_up, lag_configs, lag_states, conf_threshold, target_filter)
+	threads << spawn read_tcp(mut server_ref, ch_to_client, down_cfg, target, 'downstream', mut &analyzer_down, lag_configs, lag_states, conf_threshold, target_filter)
+	threads << spawn write_tcp_delayed(mut server_ref, ch_to_server)
+	threads << spawn write_tcp_delayed(mut &client, ch_to_client)
+	threads.wait()
+}
+
+fn start_tcp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string) {
 	_ = port
-	mut proxy_conn := net.listen_udp('127.0.0.1:${port}') or {
-		eprintln('Failed to start UDP proxy: ${err}')
+	mut listener := net.listen_tcp(.ip, '127.0.0.1:${port}') or {
+		eprintln('Failed to start TCP proxy: ${err}')
 		return
 	}
-	defer {
-		proxy_conn.close() or {}
-	}
-	println('Lagger UDP proxy listening on port ${port} forwarding to ${target}')
-	mut target_conn := net.dial_udp(target) or {
-		eprintln('Failed to dial UDP target: ${err}')
-		return
-	}
-	defer {
-		target_conn.close() or {}
-	}
-	shared holder := &ClientAddrHolder{}
-	spawn forward_udp_server_to_client(mut target_conn, mut proxy_conn, shared holder,
-		down_cfg)
-	mut local_up_cfg := up_cfg
-	mut buf := []u8{len: 2048}
+	println('Lagger TCP proxy listening on port ${port} forwarding to ${target}')
 	for {
-		bytes_read, client_addr := proxy_conn.read(mut buf) or { continue }
-		if bytes_read == 0 {
-			continue
-		}
-		if should_drop(mut local_up_cfg) {
-			continue
-		}
-		client_str := client_addr.str()
-		lock holder {
-			holder.addr_str = client_str
-		}
-		packet_data := buf[..bytes_read].clone()
-		delay := get_dynamic_latency_physical(mut local_up_cfg, bytes_read)
-		mut arrival := time.now().unix_milli() + delay
-		if rand.f64() < 0.02 {
-			arrival -= 8
-		}
-		dest_addrs := net.resolve_addrs_fuzzy(target, .udp) or { continue }
-		if dest_addrs.len == 0 {
-			continue
-		}
-		dest := dest_addrs[0]
-		spawn send_udp_with_delay(mut target_conn, UdpChunk{
-			data:         packet_data
-			dest:         dest
-			arrival_time: arrival
-		})
+		mut client_conn := listener.accept() or { continue }
+		spawn handle_tcp_connection(mut client_conn, target, up_cfg, down_cfg, upstream, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter)
 	}
 }
 
-fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &net.UdpConn, shared holder ClientAddrHolder, cfg WaveConfig) {
+fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &net.UdpConn, shared holder ClientAddrHolder, cfg WaveConfig, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string) {
 	mut local_cfg := cfg
 	mut buf := []u8{len: 2048}
+	mut analyzer := TrafficAnalyzer{
+		model: model
+		color_manager: cm
+		last_state: ''
+		last_confidence: 0.0
+		conf_threshold: conf_threshold
+	}
 	for {
 		bytes_read, _ := target_conn.read(mut buf) or { continue }
 		if bytes_read == 0 {
 			continue
 		}
-		if should_drop(mut local_cfg) {
+
+		is_matched := matches_filter('UDP_Downstream_Server', target_filter)
+		if is_matched {
+			analyzer.add_packet(buf[..bytes_read], 'UDP_Downstream_Server')
+		}
+		
+		mut active_cfg := local_cfg
+		state_str := analyzer.last_state
+
+		if !is_matched {
+			active_cfg.min_lat = 0
+			active_cfg.max_lat = 0
+			active_cfg.loss_enabled = false
+		} else {
+			mut should_apply_lag := true
+			if analyzer.last_confidence < conf_threshold {
+				should_apply_lag = false
+			}
+
+			if should_apply_lag {
+				if lag_configs.len > 0 {
+					if state_str in lag_configs {
+						active_cfg = lag_configs[state_str]
+						if local_cfg.analyze_only {
+							active_cfg.analyze_only = true
+						}
+					} else {
+						active_cfg.min_lat = 0
+						active_cfg.max_lat = 0
+						active_cfg.loss_enabled = false
+					}
+				} else if lag_states.len > 0 {
+					mut matches := false
+					for ls in lag_states {
+						if analyzer.last_state == ls || analyzer.last_state.contains(ls) {
+							matches = true
+							break
+						}
+					}
+					if !matches {
+						active_cfg.min_lat = 0
+						active_cfg.max_lat = 0
+						active_cfg.loss_enabled = false
+					}
+				}
+			} else {
+				active_cfg.min_lat = 0
+				active_cfg.max_lat = 0
+				active_cfg.loss_enabled = false
+			}
+		}
+
+		if should_drop(mut active_cfg) {
 			continue
 		}
 		packet_data := buf[..bytes_read].clone()
-		delay := get_dynamic_latency_physical(mut local_cfg, bytes_read)
+		delay := get_dynamic_latency_physical(mut active_cfg, bytes_read)
 		mut arrival := time.now().unix_milli() + delay
 		if rand.f64() < 0.02 {
 			arrival -= 8
@@ -434,24 +1001,62 @@ fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &ne
 	}
 }
 
-fn send_udp_with_delay(mut conn &net.UdpConn, packet UdpChunk) {
-	for {
-		now := time.now().unix_milli()
-		remaining := packet.arrival_time - now
-		if remaining <= 0 {
-			break
-		}
-		if remaining > 2 {
-			time.sleep(time.Duration(remaining - 1) * time.millisecond)
-		} else {
-			for time.now().unix_milli() < packet.arrival_time {}
-			break
-		}
+fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConfig, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string) {
+	_ = port
+	mut proxy_conn := net.listen_udp('127.0.0.1:${port}') or {
+		eprintln('Failed to start UDP proxy: ${err}')
+		return
 	}
-	conn.write_to(packet.dest, packet.data) or { return }
+	defer {
+		proxy_conn.close() or {}
+	}
+	println('Lagger UDP proxy listening on port ${port} forwarding to ${target}')
+	mut target_conn := net.dial_udp(target) or {
+		eprintln('Failed to dial UDP target: ${err}')
+		return
+	}
+	defer {
+		target_conn.close() or {}
+	}
+	shared holder := &ClientAddrHolder{}
+	spawn forward_udp_server_to_client(mut target_conn, mut proxy_conn, shared holder, down_cfg, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter)
+	mut local_up_cfg := up_cfg
+	mut buf := []u8{len: 2048}
+	for {
+		bytes_read, client_addr := proxy_conn.read(mut buf) or { continue }
+		if bytes_read == 0 {
+			continue
+		}
+		
+		mut active_up_cfg := local_up_cfg
+		if should_drop(mut active_up_cfg) {
+			continue
+		}
+		
+		client_str := client_addr.str()
+		lock holder {
+			holder.addr_str = client_str
+		}
+		packet_data := buf[..bytes_read].clone()
+		delay := get_dynamic_latency_physical(mut active_up_cfg, bytes_read)
+		mut arrival := time.now().unix_milli() + delay
+		if rand.f64() < 0.02 {
+			arrival -= 8
+		}
+		dest_addrs := net.resolve_addrs_fuzzy(target, .udp) or { continue }
+		if dest_addrs.len == 0 {
+			continue
+		}
+		dest := dest_addrs[0]
+		spawn send_udp_with_delay(mut target_conn, UdpChunk{
+			data:         packet_data
+			dest:         dest
+			arrival_time: arrival
+		})
+	}
 }
 
-fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig, upstream string) {
+fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string) {
 	mut buf := []u8{len: 512}
 	bytes_read := client.read(mut buf) or { return }
 	if bytes_read < 2 || buf[0] != 0x05 {
@@ -506,15 +1111,30 @@ fn handle_socks5(mut client net.TcpConn, up_cfg WaveConfig, down_cfg WaveConfig,
 	ch_to_client := chan TcpChunk{}
 	mut server_ref := server_conn
 
+	mut analyzer_up := TrafficAnalyzer{
+		model: model
+		color_manager: cm
+		last_state: ''
+		last_confidence: 0.0
+		conf_threshold: conf_threshold
+	}
+	mut analyzer_down := TrafficAnalyzer{
+		model: model
+		color_manager: cm
+		last_state: ''
+		last_confidence: 0.0
+		conf_threshold: conf_threshold
+	}
+
 	mut threads := []thread{}
-	threads << spawn read_tcp(mut &client, ch_to_server, up_cfg)
-	threads << spawn read_tcp(mut server_ref, ch_to_client, down_cfg)
+	threads << spawn read_tcp(mut &client, ch_to_server, up_cfg, target_addr, 'upstream', mut &analyzer_up, lag_configs, lag_states, conf_threshold, target_filter)
+	threads << spawn read_tcp(mut server_ref, ch_to_client, down_cfg, target_addr, 'downstream', mut &analyzer_down, lag_configs, lag_states, conf_threshold, target_filter)
 	threads << spawn write_tcp_delayed(mut server_ref, ch_to_server)
 	threads << spawn write_tcp_delayed(mut &client, ch_to_client)
 	threads.wait()
 }
 
-fn start_socks5_proxy(port int, up_cfg WaveConfig, down_cfg WaveConfig, upstream string) {
+fn start_socks5_proxy(port int, up_cfg WaveConfig, down_cfg WaveConfig, upstream string, shared cm ColorManager, model ClusteringModel, lag_configs map[string]WaveConfig, lag_states []string, conf_threshold f64, target_filter string) {
 	_ = port
 	mut listener := net.listen_tcp(.ip, '127.0.0.1:${port}') or {
 		eprintln('Failed to start SOCKS5 proxy: ${err}')
@@ -523,7 +1143,7 @@ fn start_socks5_proxy(port int, up_cfg WaveConfig, down_cfg WaveConfig, upstream
 	println('Lagger SOCKS5 proxy listening on port ${port}')
 	for {
 		mut client_conn := listener.accept() or { continue }
-		spawn handle_socks5(mut client_conn, up_cfg, down_cfg, upstream)
+		spawn handle_socks5(mut client_conn, up_cfg, down_cfg, upstream, shared cm, model, lag_configs, lag_states, conf_threshold, target_filter)
 	}
 }
 
@@ -543,8 +1163,8 @@ fn parse_custom(s string) []f64 {
 fn main() {
 	mut fp := flag.new_flag_parser(os.args)
 	fp.application('lagger')
-	fp.version('1.3.0')
-	fp.description('Dynamic Latency Simulator Proxy')
+	fp.version('1.5.0')
+	fp.description('Dynamic Latency Simulator & Side-Channel Behavior Analyzer Proxy')
 	fp.skip_executable()
 	up_pattern := fp.string('up-pattern', `p`, 'sine', '')
 	up_min := fp.float('up-min', `n`, 50.0, '')
@@ -571,10 +1191,87 @@ fn main() {
 	target := fp.string('target', `r`, '127.0.0.1:8080', '')
 	proto := fp.string('proto', `m`, 'socks5', '')
 	upstream := fp.string('upstream', `w`, '', '')
+
+	analyze_mode := fp.bool('analyze', `a`, false, 'Run in analyze-only mode (no lag/loss, prints states)')
+	load_path := fp.string('load-model', `f`, '', 'Path to a .lgr JSON file to load neural network weights & lag configs')
+	lag_on_str := fp.string('lag-on', `g`, '', 'Only apply lag/loss on these comma-separated states (e.g. "2,3")')
+	
+	save_path := fp.string('save-model', `v`, 'model.lgr', 'Filename to save the neural network weights & lag configs when exiting')
+	conf_threshold := fp.float('conf-threshold', `c`, 0.0, 'Minimum neural network confidence percentage to trigger lag and display transitions (0 to 100)')
+	
+	target_filter := fp.string('target-filter', `t`, '', 'Only analyze/lag targets matching this comma-separated filter (e.g. "telegram,149.154")')
+
 	_ := fp.finalize() or {
 		eprintln(err)
 		println(fp.usage())
 		return
+	}
+
+	mut model := new_clustering_model()
+	mut lag_configs := map[string]WaveConfig{}
+
+	if load_path != '' {
+		println('Loading neural network weights and lag workspaces from ${load_path}...')
+		content := os.read_file(load_path) or {
+			eprintln('Failed to read model file: ${err}')
+			return
+		}
+		config := json.decode(LaggerConfig, content) or {
+			eprintln('Failed to decode Lagger config JSON: ${err}')
+			return
+		}
+		model = config.model
+		lag_configs = config.lag_configs.clone()
+		println('Model and ${lag_configs.len} state-specific lag workspaces loaded successfully!')
+	}
+
+	os.signal_opt(.int, fn [save_path, model, lag_configs] (_ os.Signal) {
+		println('\n[SIGINT] Interrupted by user. Saving configuration to ${save_path}...')
+		
+		mut final_configs := lag_configs.clone()
+		if final_configs.len == 0 {
+			final_configs['3'] = WaveConfig{
+				min_lat: 100.0
+				max_lat: 300.0
+				pattern: 'sine'
+				period: 5.0
+				natural: true
+				jitter: 15.0
+				loss_enabled: true
+			}
+		}
+
+		config := LaggerConfig{
+			model: model
+			lag_configs: final_configs
+		}
+
+		model_json := json.encode_pretty(config)
+		os.write_file(save_path, model_json) or {
+			eprintln('Error saving model file: ${err}')
+			exit(1)
+		}
+		println('[SYSTEM] Saved model and customizable lag templates to ${save_path} successfully. Exiting.')
+		exit(0)
+	}) or {
+		eprintln('Failed to register SIGINT handler: ${err}')
+	}
+
+	mut lag_states := []string{}
+	if lag_on_str != '' {
+		parts := lag_on_str.split(',')
+		for p in parts {
+			lag_states << p.trim_space()
+		}
+		println('Targeted Lagging enabled! Only lagging on states: ${lag_states}')
+	}
+
+	if conf_threshold > 0.0 {
+		println('Confidence Filter enabled! Only lagging and printing analysis when Neural Network is at least ${conf_threshold}% confident.')
+	}
+
+	if target_filter != '' {
+		println('Target Filter enabled! Only analyzing and lagging domains/IPs matching: "${target_filter}"')
 	}
 
 	mut up_cfg := WaveConfig{
@@ -592,6 +1289,7 @@ fn main() {
 		is_bad_state:   false
 		loss_enabled:   up_natural
 		bandwidth_mbps: up_bandwidth
+		analyze_only:   analyze_mode
 	}
 
 	mut down_cfg := WaveConfig{
@@ -609,6 +1307,7 @@ fn main() {
 		is_bad_state:   false
 		loss_enabled:   down_natural
 		bandwidth_mbps: down_bandwidth
+		analyze_only:   analyze_mode
 	}
 
 	if sync_mode {
@@ -632,13 +1331,21 @@ fn main() {
 		down_cfg.inverse = true
 	}
 
-	println('Starting Lagger Latency Proxy')
+	shared color_manager := &ColorManager{
+		state_colors: map[string]string{}
+	}
+
+	if analyze_mode {
+		println('Running in ANALYZE-ONLY mode. Lagging is bypassed.')
+	}
+
+	println('Starting Lagger Dynamic Latency & Behavior Analyzer')
 	if proto == 'tcp' {
-		start_tcp_proxy(port, target, up_cfg, down_cfg, upstream)
+		start_tcp_proxy(port, target, up_cfg, down_cfg, upstream, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter)
 	} else if proto == 'udp' {
-		start_udp_proxy(port, target, up_cfg, down_cfg)
+		start_udp_proxy(port, target, up_cfg, down_cfg, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter)
 	} else if proto == 'socks5' {
-		start_socks5_proxy(port, up_cfg, down_cfg, upstream)
+		start_socks5_proxy(port, up_cfg, down_cfg, upstream, shared color_manager, model, lag_configs, lag_states, conf_threshold, target_filter)
 	} else {
 		eprintln('Unknown protocol: ${proto}')
 	}
