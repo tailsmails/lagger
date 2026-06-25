@@ -1,9 +1,9 @@
 # lagger
 
 ## Overview
-lagger is a dynamic network latency and packet loss simulation proxy designed to emulate real-world network degradation at the application layer. Operating as a TCP, UDP, or SOCKS5 proxy, it introduces mathematically structured jitter, serialization delays, and bursty packet loss to simulate highly variable network environments.
+lagger is a dynamic network latency, packet loss simulation, and side-channel behavioral analysis proxy designed to emulate real-world network degradation at the application layer. Operating as a TCP, UDP, or SOCKS5 proxy, it introduces mathematically structured jitter, serialization delays, and bursty packet loss.
 
-Unlike simple random-delay simulators, lagger utilizes statistical distributions and network state machines to model physical link constraints, router queuing delays, and transport-layer characteristics.
+Unlike simple random-delay simulators, lagger utilizes statistical distributions, network state machines, and an **unsupervised competitive learning clustering engine** to segment and target traffic behaviors adaptively. By evaluating real-time temporal and payload features without decrypting packets, lagger can isolate specific traffic states (such as active streaming, chat messaging, or control signals) and apply customized network impairment profiles only when those behaviors are detected.
 
 ---
 
@@ -14,6 +14,35 @@ Unlike simple random-delay simulators, lagger utilizes statistical distributions
 *   **Layer 1/2 Serialization Delay:** Computes dynamic transmission overhead based on actual packet size (in bits) against a user-defined physical bandwidth limit (in Mbps), introducing realistic delay differences between small keep-alive packets and large data blocks.
 *   **Heavy-Tailed Queuing Delay (Pareto & Gaussian Jitter):** Simulates hardware-level routing congestion using the Pareto distribution alongside Box-Muller Gaussian jitter, recreating the occasional high-latency spikes (spikes/tails) seen in congested WAN routes.
 *   **Autocorrelation (EMA Filter):** Employs an Exponential Moving Average (EMA) to ensure consecutive packets experience correlated delays rather than independent, chaotic fluctuations, emulating the smooth latency drift of physical paths.
+
+### Encrypted Content Side-Channel Analysis (11D Clustering)
+To bypass packet encryption and obfuscation without decryption, lagger extracts multi-layered side-channel features and projects them into an **11-Dimensional competitive learning space** (Mode 0 to Mode 11):
+
+1.  **Macro-Metadata Layer:**
+    *   `PPS` (Packets Per Second)
+    *   `Average Packet Size`
+    *   `Jitter` (Inter-Arrival Time Standard Deviation)
+    *   `Shannon Entropy` (Payload randomness evaluation, $O(N)$ complexity)
+2.  **Granular Traffic Layer:**
+    *   `Size Standard Deviation` (Measures uniform media streams vs. jittery web-browsing sizes)
+    *   `Large Packet Ratio` (Proportion of MTU-like packets larger than 1200 bytes)
+    *   `Entropy Volatility` (Standard deviation of entropy, identifying encryption phase changes)
+    *   `Burst Density` (Ratio of packets arriving within highly dense < 8ms windows)
+3.  **Encrypted Content/Cryptographic Layer:**
+    *   `Block Padding Ratio` (Detects structural 16-byte alignment patterns typical of AES block ciphers)
+    *   `Internal Rolling Entropy Variance` (Spatial entropy variation within 64-byte chunks of a single packet)
+    *   `Byte Frequency Uniformity` (Statistical evaluation measuring the deviation of byte distribution from perfect cryptographic randomness)
+
+### Radial Basis Function (RBF) Confidence Calibration
+Due to the high-dimensional feature space, linear distance metrics suffer from the "curse of dimensionality." lagger implements a non-linear **Exponential RBF Kernel mapping** to compute clustering confidence:
+$$\text{Confidence} = e^{-\lambda \cdot d} \times 100$$
+This ensures mathematically smooth, stable, and naturally scaled confidence ratings, allowing more accurate behavior classification without false transitions near cluster boundaries.
+
+### Grammatical & Run-Length Encoded State Machine
+Instead of simple state concatenation (which degrades into illegible strings over time), lagger features a **Run-Length Encoded (RLE) & Grammatical Pair Merger** (`StateCompressor`).
+*   **Run-Length Compression:** Consecutive repeating states are summarized as a multiplier (e.g., state `1` repeated 4 times prints as `1n4`).
+*   **Structural Chaining:** Frequently co-occurring distinct sequences are combined using grammatical addition (e.g., when `"95n2"` and `"50n2"` occur together repeatedly, they merge into `"95n2+50n2"`).
+*   **Zero-Flapping Filter:** Transition logs and state updates are completely gated by the confidence threshold. Low-confidence cluster boundaries are ignored, preserving the previous high-confidence macro-state and keeping terminal output extremely quiet and readable.
 
 ---
 
@@ -72,6 +101,93 @@ Start the proxy by specifying the protocol, port, target, and physical propertie
 *   `--up-natural` / `--down-natural`: Enables the physical layer emulation (Gilbert-Elliott loss, Pareto noise, and Gaussian jitter).
 *   `--up-jitter`: Standard deviation of the Gaussian jitter.
 *   `--up-correlation`: Autocorrelation factor between successive packet delays (0.0 to 1.0).
+*   `-a`, `--analyze`: Runs in analyze-only mode (bypasses all lagging and drops, solely displaying live behavioral state transitions).
+*   `-v`, `--save-model`: Name of the `.lgr` file to save the learned clustering centroids and state lag templates upon exiting (defaults to `model.lgr`).
+*   `-f`, `--load-model`: Path to a `.lgr` file to load learned centroids and custom state-specific lag configurations.
+*   `-g`, `--lag-on`: Only apply lag/loss on these comma-separated states (e.g., `--lag-on 2,3`). Bypasses lagging on any unlisted state.
+*   `-c`, `--conf-threshold`: Minimum clustering model confidence percentage required to trigger lagging **and** gate transition analysis printing (0.0 to 100.0, defaults to `0.0`). Filtering out low-confidence state transitions eliminates boundary noise.
+*   `-t`, `--target-filter`: Comma-separated filter of target domains or IPs (e.g., `telegram,149.154`). Only analyzes and lags matching hosts, letting other background sockets bypass the proxy unhindered.
+
+---
+
+## Advanced targeted lagging & workspaces
+
+Instead of applying a flat lag across the entire connection, you can assign **independent, customized lag workspaces** to any of the 12 states. For example, you can set a minor latency oscillation for text chatting (e.g., State 2) and a heavy, lossy latency wave for media streaming (e.g., State 3), while leaving standard keep-alives untouched.
+
+### Step 1: Profiling the Application (Analyze Mode)
+Run the proxy in analyze-only mode, filtering specifically for your target app:
+```bash
+./lagger --proto socks5 --port 1080 --analyze --save-model my_profile.lgr --target-filter "telegram,149.154"
+```
+Once you are done capturing traffic patterns, hit `Ctrl+C` to gracefully stop. A human-readable, pretty-printed JSON config will be written to `my_profile.lgr`.
+
+### Step 2: Customizing the Workspaces
+Open the generated `my_profile.lgr` file in any text editor. You will see the learned centroids in their 11-dimensional format and a customizable `lag_configs` block. Assign separate `WaveConfig` workspaces to different modes:
+
+```json
+{
+  "model": {
+    "centroids": [
+      [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+      [0.01, 0.05, 0.05, 0.85, 0.02, 0.01, 0.02, 0.05, 0.1, 0.05, 0.9],
+      [0.08, 0.12, 0.4, 0.88, 0.15, 0.05, 0.05, 0.2, 0.25, 0.15, 0.8],
+      [0.85, 0.95, 0.05, 0.98, 0.05, 0.9, 0.01, 0.02, 0.95, 0.02, 0.99],
+      [0.55, 0.35, 0.6, 0.92, 0.25, 0.2, 0.1, 0.35, 0.4, 0.1, 0.75],
+      [0.05, 0.8, 0.0, 0.95, 0.1, 0.75, 0.02, 0.05, 0.8, 0.05, 0.98],
+      [0.25, 0.15, 0.75, 0.86, 0.3, 0.1, 0.15, 0.45, 0.2, 0.25, 0.7],
+      [0.9, 0.1, 0.25, 0.95, 0.05, 0.02, 0.03, 0.1, 0.1, 0.05, 0.95],
+      [0.02, 0.3, 0.2, 0.9, 0.12, 0.15, 0.08, 0.15, 0.3, 0.1, 0.85],
+      [0.4, 0.7, 0.3, 0.95, 0.2, 0.6, 0.05, 0.25, 0.7, 0.08, 0.95],
+      [0.3, 0.1, 0.9, 0.85, 0.35, 0.05, 0.18, 0.5, 0.15, 0.3, 0.65],
+      [0.7, 0.5, 0.5, 0.95, 0.22, 0.45, 0.08, 0.3, 0.5, 0.12, 0.88]
+    ]
+  },
+  "lag_configs": {
+    "2": {
+      "min_lat": 40.0,
+      "max_lat": 100.0,
+      "sync": false,
+      "sync_inverse": false,
+      "pattern": "sine",
+      "period": 5.0,
+      "custom": [],
+      "natural": true,
+      "jitter": 5.0,
+      "correlation": 0.8,
+      "inverse": false,
+      "last_lat": 0.0,
+      "is_bad_state": false,
+      "loss_enabled": false,
+      "bandwidth_mbps": 50.0,
+      "analyze_only": false
+    },
+    "3": {
+      "min_lat": 400.0,
+      "max_lat": 800.0,
+      "sync": false,
+      "sync_inverse": false,
+      "pattern": "random",
+      "period": 2.0,
+      "custom": [],
+      "natural": true,
+      "jitter": 40.0,
+      "correlation": 0.6,
+      "inverse": false,
+      "last_lat": 0.0,
+      "is_bad_state": false,
+      "loss_enabled": true,
+      "bandwidth_mbps": 1.5,
+      "analyze_only": false
+    }
+  }
+}
+```
+
+### Step 3: Run Targeted Lagging
+Start lagger with your customized model. It will dynamically read the workspaces, lagging Mode 2 and Mode 3 differently while bypassing Mode 0, 1, and others:
+```bash
+./lagger --proto socks5 --port 1080 --load-model my_profile.lgr --target-filter "149.154" --conf-threshold 90.0
+```
 
 ---
 
@@ -81,4 +197,4 @@ This software is provided "as is" and is intended solely for educational purpose
 ---
 
 ## License
-![License](https://img.shields.io/badge/License-MIT-blue.svg)
+![License](https://img.shields.io/badge/License-GPLv3-blue.svg)
