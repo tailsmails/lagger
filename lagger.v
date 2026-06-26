@@ -159,7 +159,7 @@ struct StateCompressor {
 mut:
 	history   []StateToken
 	threshold int = 3
-	grammar   SharedGrammar
+	grammar   shared SharedGrammar
 }
 
 fn (mut sc StateCompressor) squash() {
@@ -1047,9 +1047,7 @@ fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig, target_addr 
 				} {
 					pushed = true
 				}
-				500 * time.millisecond {
-					// timeout
-				}
+				500 * time.millisecond {}
 			}
 			if !pushed {
 				break
