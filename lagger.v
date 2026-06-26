@@ -19,6 +19,12 @@ import flag
 import rand as _
 import json
 
+$if !windows {
+	#include <signal.h>
+}
+
+fn C.signal(sig int, handler voidptr) voidptr
+
 const state_colors_list = [
 	'\x1b[38;5;34m',
 	'\x1b[38;5;39m',
@@ -1644,6 +1650,12 @@ fn parse_custom(s string) []f64 {
 }
 
 fn main() {
+	$if !windows {
+		unsafe {
+			C.signal(C.SIGPIPE, C.SIG_IGN)
+		}
+	}
+
 	mut fp := flag.new_flag_parser(os.args)
 	fp.application('lagger')
 	fp.version('1.5.0')
