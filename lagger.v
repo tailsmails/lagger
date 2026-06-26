@@ -26,18 +26,38 @@ $if !windows {
 fn C.signal(sig int, handler voidptr) voidptr
 
 const state_colors_list = [
-	'\x1b[38;5;34m',
-	'\x1b[38;5;39m',
-	'\x1b[38;5;208m',
-	'\x1b[38;5;198m',
-	'\x1b[38;5;46m',
-	'\x1b[38;5;21m',
-	'\x1b[38;5;165m',
-	'\x1b[38;5;226m',
-	'\x1b[38;5;51m',
-	'\x1b[38;5;93m',
-	'\x1b[38;5;202m',
-	'\x1b[38;5;129m',
+	'\x1b[38;5;34m',   // Green
+	'\x1b[38;5;39m',   // Blue
+	'\x1b[38;5;208m',  // Orange
+	'\x1b[38;5;198m',  // Pink
+	'\x1b[38;5;46m',   // Lime
+	'\x1b[38;5;21m',   // Dark Blue
+	'\x1b[38;5;165m',  // Purple
+	'\x1b[38;5;226m',  // Yellow
+	'\x1b[38;5;51m',   // Cyan
+	'\x1b[38;5;93m',   // Violet
+	'\x1b[38;5;202m',  // Red-Orange
+	'\x1b[38;5;129m',  // Magenta
+	'\x1b[38;5;118m',  // Light Green
+	'\x1b[38;5;45m',   // Light Blue
+	'\x1b[38;5;214m',  // Gold
+	'\x1b[38;5;161m',  // Crimson
+	'\x1b[38;5;82m',   // Bright Lime
+	'\x1b[38;5;27m',   // Royal Blue
+	'\x1b[38;5;201m',  // Fuchsia
+	'\x1b[38;5;220m',  // Amber
+	'\x1b[38;5;50m',   // Teal
+	'\x1b[38;5;57m',   // Indigo
+	'\x1b[38;5;196m',  // Pure Red
+	'\x1b[38;5;135m',  // Orchid
+	'\x1b[38;5;40m',   // Forest Green
+	'\x1b[38;5;33m',   // Sky Blue
+	'\x1b[38;5;200m',  // Hot Pink
+	'\x1b[38;5;142m',  // Olive Yellow
+	'\x1b[38;5;87m',   // Ice Blue
+	'\x1b[38;5;99m',   // Slate Purple
+	'\x1b[38;5;210m',  // Coral
+	'\x1b[38;5;123m',  // Mint
 ]
 
 struct TcpChunk {
@@ -83,62 +103,175 @@ mut:
 
 struct ClusteringModel {
 mut:
-	centroids [][]f64
+	w1                   [][]f64
+	b1                   []f64
+	w2                   [][]f64
+	b2                   []f64
+	w3                   [][]f64
+	b3                   []f64
+	centroids            [][]f64
+	centroid_initialized []bool
+}
+
+fn relu(x f64) f64 {
+	return if x > 0.0 { x } else { 0.0 }
 }
 
 fn new_clustering_model() ClusteringModel {
-	mut centroids := [][]f64{len: 12}
-	centroids[0] = [0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00]
-	centroids[1] = [0.01, 0.05, 0.05, 0.85, 0.02, 0.01, 0.02, 0.05, 0.10, 0.05, 0.90]
-	centroids[2] = [0.08, 0.12, 0.40, 0.88, 0.15, 0.05, 0.05, 0.20, 0.25, 0.15, 0.80]
-	centroids[3] = [0.85, 0.95, 0.05, 0.98, 0.05, 0.90, 0.01, 0.02, 0.95, 0.02, 0.99]
-	centroids[4] = [0.55, 0.35, 0.60, 0.92, 0.25, 0.20, 0.10, 0.35, 0.40, 0.10, 0.75]
-	centroids[5] = [0.05, 0.80, 0.00, 0.95, 0.10, 0.75, 0.02, 0.05, 0.80, 0.05, 0.98]
-	centroids[6] = [0.25, 0.15, 0.75, 0.86, 0.30, 0.10, 0.15, 0.45, 0.20, 0.25, 0.70]
-	centroids[7] = [0.90, 0.10, 0.25, 0.95, 0.05, 0.02, 0.03, 0.10, 0.10, 0.05, 0.95]
-	centroids[8] = [0.02, 0.30, 0.20, 0.90, 0.12, 0.15, 0.08, 0.15, 0.30, 0.10, 0.85]
-	centroids[9] = [0.40, 0.70, 0.30, 0.95, 0.20, 0.60, 0.05, 0.25, 0.70, 0.08, 0.95]
-	centroids[10] = [0.30, 0.10, 0.90, 0.85, 0.35, 0.05, 0.18, 0.50, 0.15, 0.30, 0.65]
-	centroids[11] = [0.70, 0.50, 0.50, 0.95, 0.22, 0.45, 0.08, 0.30, 0.50, 0.12, 0.88]
+	mut w1 := [][]f64{len: 64}
+	mut b1 := []f64{len: 64}
+	for i in 0 .. 64 {
+		w1[i] = []f64{len: 28}
+		b1[i] = 0.01 * f64(i % 5 - 2)
+		for j in 0 .. 28 {
+			angle := f64(i * 28 + j) * 0.1
+			w1[i][j] = math.sin(angle) * 0.15
+		}
+	}
+
+	mut w2 := [][]f64{len: 32}
+	mut b2 := []f64{len: 32}
+	for i in 0 .. 32 {
+		w2[i] = []f64{len: 64}
+		b2[i] = 0.01 * f64(i % 3 - 1)
+		for j in 0 .. 64 {
+			angle := f64(i * 64 + j) * 0.15
+			w2[i][j] = math.cos(angle) * 0.12
+		}
+	}
+
+	mut w3 := [][]f64{len: 32}
+	mut b3 := []f64{len: 32}
+	for i in 0 .. 32 {
+		w3[i] = []f64{len: 32}
+		b3[i] = 0.0
+		for j in 0 .. 32 {
+			angle := f64(i * 32 + j) * 0.2
+			w3[i][j] = math.sin(angle) * 0.2
+		}
+	}
+
+	mut centroids := [][]f64{len: 32}
+	for i in 0 .. 32 {
+		centroids[i] = []f64{len: 28}
+		for j in 0 .. 28 {
+			centroids[i][j] = 0.5
+		}
+	}
+
 	return ClusteringModel{
-		centroids: centroids
+		w1:                   w1
+		b1:                   b1
+		w2:                   w2
+		b2:                   b2
+		w3:                   w3
+		b3:                   b3
+		centroids:            centroids
+		centroid_initialized: []bool{len: 32, init: false}
 	}
 }
 
 fn (m ClusteringModel) clone() ClusteringModel {
-	mut cloned := [][]f64{len: m.centroids.len}
-	for i in 0 .. m.centroids.len {
-		cloned[i] = m.centroids[i].clone()
-	}
+	mut cloned_w1 := [][]f64{len: m.w1.len}
+	for i in 0 .. m.w1.len { cloned_w1[i] = m.w1[i].clone() }
+	mut cloned_w2 := [][]f64{len: m.w2.len}
+	for i in 0 .. m.w2.len { cloned_w2[i] = m.w2[i].clone() }
+	mut cloned_w3 := [][]f64{len: m.w3.len}
+	for i in 0 .. m.w3.len { cloned_w3[i] = m.w3[i].clone() }
+	mut cloned_centroids := [][]f64{len: m.centroids.len}
+	for i in 0 .. m.centroids.len { cloned_centroids[i] = m.centroids[i].clone() }
+
 	return ClusteringModel{
-		centroids: cloned
+		w1:                   cloned_w1
+		b1:                   m.b1.clone()
+		w2:                   cloned_w2
+		b2:                   m.b2.clone()
+		w3:                   cloned_w3
+		b3:                   m.b3.clone()
+		centroids:            cloned_centroids
+		centroid_initialized: m.centroid_initialized.clone()
 	}
 }
 
 fn (mut m ClusteringModel) predict_and_update(input []f64, learning_rate f64) (int, f64) {
-	mut min_dist := 1e9
-	mut winner := 0
-
-	for i in 0 .. 12 {
-		mut dist := 0.0
-		for j in 0 .. 11 {
-			diff := input[j] - m.centroids[i][j]
-			dist += diff * diff
+	mut h1 := []f64{len: 64}
+	for i in 0 .. 64 {
+		mut sum := 0.0
+		for j in 0 .. 28 {
+			sum += input[j] * m.w1[i][j]
 		}
-		dist = math.sqrt(dist)
-		if dist < min_dist {
-			min_dist = dist
+		h1[i] = relu(sum + m.b1[i])
+	}
+
+	mut h2 := []f64{len: 32}
+	for i in 0 .. 32 {
+		mut sum := 0.0
+		for j in 0 .. 64 {
+			sum += h1[j] * m.w2[i][j]
+		}
+		h2[i] = relu(sum + m.b2[i])
+	}
+
+	mut output := []f64{len: 32}
+	mut winner := 0
+	mut max_val := -1e9
+	for i in 0 .. 32 {
+		mut sum := 0.0
+		for j in 0 .. 32 {
+			sum += h2[j] * m.w3[i][j]
+		}
+		output[i] = sum + m.b3[i]
+		if output[i] > max_val {
+			max_val = output[i]
 			winner = i
 		}
 	}
 
 	if learning_rate > 0.0 {
-		for j in 0 .. 11 {
-			m.centroids[winner][j] += learning_rate * (input[j] - m.centroids[winner][j])
+		mut d_out := []f64{len: 32}
+		for i in 0 .. 32 {
+			target := if i == winner { 1.0 } else { 0.0 }
+			d_out[i] = target - output[i]
+			m.b3[i] += learning_rate * d_out[i]
+			for j in 0 .. 32 {
+				m.w3[i][j] += learning_rate * d_out[i] * h2[j]
+			}
+		}
+
+		mut d_h2 := []f64{len: 32}
+		for j in 0 .. 32 {
+			mut err := 0.0
+			for i in 0 .. 32 {
+				err += d_out[i] * m.w3[i][j]
+			}
+			d_h2[j] = if h2[j] > 0.0 { err } else { 0.0 }
+			m.b2[j] += learning_rate * d_h2[j]
+			for k in 0 .. 64 {
+				m.w2[j][k] += learning_rate * d_h2[j] * h1[k]
+			}
+		}
+
+		if !m.centroid_initialized[winner] {
+			for j in 0 .. 28 {
+				m.centroids[winner][j] = input[j]
+			}
+			m.centroid_initialized[winner] = true
+		} else {
+			for j in 0 .. 28 {
+				m.centroids[winner][j] += learning_rate * (input[j] - m.centroids[winner][j])
+			}
 		}
 	}
 
-	confidence := math.exp(-min_dist * 0.33) * 100.0
+	mut dist := 0.0
+	for j in 0 .. 28 {
+		diff := input[j] - m.centroids[winner][j]
+		dist += diff * diff
+	}
+	dist = math.sqrt(dist)
+
+	mean_dist := dist / 5.2915
+	confidence := math.exp(-mean_dist * 0.5) * 100.0
 	return winner, confidence
 }
 
@@ -306,6 +439,7 @@ mut:
 	packet_sizes             []int
 	rolling_entropy_vars     []f64
 	byte_uniformities        []f64
+	tail_patterns            []f64
 	model                    ClusteringModel
 	color_manager            shared ColorManager
 	last_state               string
@@ -433,6 +567,47 @@ fn calculate_entropy(data []u8) f64 {
 	return entropy / 8.0
 }
 
+fn calculate_renyi_entropy(data []u8) f64 {
+	if data.len == 0 {
+		return 0.0
+	}
+	mut counts := [256]int{}
+	for b in data {
+		counts[b]++
+	}
+	mut sum_sq := 0.0
+	len_f := f64(data.len)
+	for count in counts {
+		p := f64(count) / len_f
+		sum_sq += p * p
+	}
+	if sum_sq == 0.0 {
+		return 0.0
+	}
+	entropy := -math.log2(sum_sq)
+	return entropy / 8.0
+}
+
+fn calculate_min_entropy(data []u8) f64 {
+	if data.len == 0 {
+		return 0.0
+	}
+	mut counts := [256]int{}
+	mut max_count := 0
+	for b in data {
+		counts[b]++
+		if counts[b] > max_count {
+			max_count = counts[b]
+		}
+	}
+	p_max := f64(max_count) / f64(data.len)
+	if p_max == 0.0 {
+		return 0.0
+	}
+	entropy := -math.log2(p_max)
+	return entropy / 8.0
+}
+
 fn calculate_rolling_entropy_variance(data []u8) f64 {
 	if data.len < 128 {
 		return 0.0
@@ -474,6 +649,36 @@ fn calculate_byte_uniformity(data []u8) f64 {
 	}
 	norm_var := variance / f64(data.len)
 	return math.max(0.0, 1.0 - (norm_var / 12.0))
+}
+
+fn calculate_tail_pattern(data []u8) f64 {
+	if data.len < 16 {
+		return 0.0
+	}
+	last_b := data[data.len - 1]
+	mut matches := 0
+	for i := 1; i <= 8; i++ {
+		if data[data.len - i] == last_b {
+			matches++
+		}
+	}
+	return f64(matches) / 8.0
+}
+
+fn calculate_autocorr(sizes []int, lag int) f64 {
+	if sizes.len <= lag {
+		return 0.0
+	}
+	mut diff_sum := 0.0
+	for i := 0; i < sizes.len - lag; i++ {
+		mut diff := f64(sizes[i] - sizes[i + lag])
+		if diff < 0.0 {
+			diff = -diff
+		}
+		diff_sum += diff
+	}
+	avg_diff := diff_sum / f64(sizes.len - lag)
+	return math.max(0.0, 1.0 - (avg_diff / 1500.0))
 }
 
 fn matches_filter(target_addr string, filter_parts []string) bool {
@@ -638,6 +843,9 @@ fn (mut ta TrafficAnalyzer) add_packet(data []u8, target_addr string) {
 	p_uniform := calculate_byte_uniformity(data)
 	ta.byte_uniformities << p_uniform
 
+	p_tail := calculate_tail_pattern(data)
+	ta.tail_patterns << p_tail
+
 	if ta.sliding_window.len > 0 {
 		interval := now - ta.sliding_window[ta.sliding_window.len - 1]
 		ta.intervals << interval
@@ -671,6 +879,9 @@ fn (mut ta TrafficAnalyzer) add_packet(data []u8, target_addr string) {
 		if ta.byte_uniformities.len > ta.sliding_window.len {
 			ta.byte_uniformities.delete_many(0, ta.byte_uniformities.len - ta.sliding_window.len)
 		}
+		if ta.tail_patterns.len > ta.sliding_window.len {
+			ta.tail_patterns.delete_many(0, ta.tail_patterns.len - ta.sliding_window.len)
+		}
 	}
 
 	if now - ta.last_print_time >= 500 {
@@ -686,6 +897,7 @@ fn (mut ta TrafficAnalyzer) add_packet(data []u8, target_addr string) {
 		ta.packet_sizes.clear()
 		ta.rolling_entropy_vars.clear()
 		ta.byte_uniformities.clear()
+		ta.tail_patterns.clear()
 		ta.last_packet_time = now
 	}
 }
@@ -718,16 +930,20 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 	norm_size_std := math.min(1.0, size_std_dev / 500.0)
 
 	mut large_packet_count := 0
+	mut small_packet_count := 0
+	mut med_packet_count := 0
 	for sz in ta.packet_sizes {
 		if sz > 1200 {
 			large_packet_count++
+		} else if sz < 128 {
+			small_packet_count++
+		} else {
+			med_packet_count++
 		}
 	}
-	large_ratio := if ta.packet_sizes.len > 0 {
-		f64(large_packet_count) / f64(ta.packet_sizes.len)
-	} else {
-		0.0
-	}
+	large_ratio := if ta.packet_sizes.len > 0 { f64(large_packet_count) / f64(ta.packet_sizes.len) } else { 0.0 }
+	small_packet_ratio := if ta.packet_sizes.len > 0 { f64(small_packet_count) / f64(ta.packet_sizes.len) } else { 0.0 }
+	med_packet_ratio := if ta.packet_sizes.len > 0 { f64(med_packet_count) / f64(ta.packet_sizes.len) } else { 0.0 }
 
 	mut sum_entropy_diff_sq := 0.0
 	for ent in ta.entropies {
@@ -753,17 +969,22 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 		0.0
 	}
 
-	mut block_aligned_count := 0
+	mut align_8_count := 0
+	mut align_16_count := 0
+	mut align_32_count := 0
+	mut align_64_count := 0
 	for sz in ta.packet_sizes {
-		if sz > 0 && sz % 16 == 0 {
-			block_aligned_count++
+		if sz > 0 {
+			if sz % 8 == 0 { align_8_count++ }
+			if sz % 16 == 0 { align_16_count++ }
+			if sz % 32 == 0 { align_32_count++ }
+			if sz % 64 == 0 { align_64_count++ }
 		}
 	}
-	block_align_ratio := if ta.packet_sizes.len > 0 {
-		f64(block_aligned_count) / f64(ta.packet_sizes.len)
-	} else {
-		0.0
-	}
+	align_8_ratio := if ta.packet_sizes.len > 0 { f64(align_8_count) / f64(ta.packet_sizes.len) } else { 0.0 }
+	align_16_ratio := if ta.packet_sizes.len > 0 { f64(align_16_count) / f64(ta.packet_sizes.len) } else { 0.0 }
+	align_32_ratio := if ta.packet_sizes.len > 0 { f64(align_32_count) / f64(ta.packet_sizes.len) } else { 0.0 }
+	align_64_ratio := if ta.packet_sizes.len > 0 { f64(align_64_count) / f64(ta.packet_sizes.len) } else { 0.0 }
 
 	mut sum_rev := 0.0
 	for rev in ta.rolling_entropy_vars {
@@ -785,23 +1006,135 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 	} else {
 		0.0
 	}
+	
+	mut sum_int := 0.0
+	for val in ta.intervals {
+		sum_int += f64(val)
+	}
+	avg_int := if ta.intervals.len > 0 { sum_int / f64(ta.intervals.len) } else { 0.0 }
+
+	mut sum_int_diff_sq := 0.0
+	for val in ta.intervals {
+		diff := f64(val) - avg_int
+		sum_int_diff_sq += diff * diff
+	}
+	int_std_dev := if ta.intervals.len > 0 {
+		math.sqrt(sum_int_diff_sq / f64(ta.intervals.len))
+	} else {
+		0.0
+	}
+
+	mut skewness_iat := 0.0
+	mut kurtosis_iat := 0.0
+	if ta.intervals.len >= 3 && int_std_dev > 0.0 {
+		mut skew_sum := 0.0
+		mut kurt_sum := 0.0
+		for val in ta.intervals {
+			diff := f64(val) - avg_int
+			skew_sum += diff * diff * diff
+			kurt_sum += diff * diff * diff * diff
+		}
+		n := f64(ta.intervals.len)
+		skewness_iat = (skew_sum / n) / (int_std_dev * int_std_dev * int_std_dev)
+		kurtosis_iat = (kurt_sum / n) / (int_std_dev * int_std_dev * int_std_dev * int_std_dev) - 3.0
+	}
+	norm_skewness := math.min(1.0, math.max(0.0, (math.tanh(skewness_iat) + 1.0) / 2.0))
+	norm_kurtosis := math.min(1.0, math.max(0.0, (math.tanh(kurtosis_iat) + 1.0) / 2.0))
+	
+	size_autocorr_1 := calculate_autocorr(ta.packet_sizes, 1)
+	size_autocorr_2 := calculate_autocorr(ta.packet_sizes, 2)
+	size_autocorr_3 := calculate_autocorr(ta.packet_sizes, 3)
+	
+	mut low_entropy_count := 0
+	mut med_entropy_count := 0
+	for ent in ta.entropies {
+		if ent < 0.6 {
+			low_entropy_count++
+		} else if ent >= 0.6 && ent < 0.9 {
+			med_entropy_count++
+		}
+	}
+	low_entropy_ratio := if ta.entropies.len > 0 { f64(low_entropy_count) / f64(ta.entropies.len) } else { 0.0 }
+	med_entropy_ratio := if ta.entropies.len > 0 { f64(med_entropy_count) / f64(ta.entropies.len) } else { 0.0 }
+	
+	mut constant_runs := 0
+	for i := 0; i < ta.packet_sizes.len - 1; i++ {
+		if ta.packet_sizes[i] == ta.packet_sizes[i + 1] {
+			constant_runs++
+		}
+	}
+	constant_run_ratio := if ta.packet_sizes.len > 1 {
+		f64(constant_runs) / f64(ta.packet_sizes.len - 1)
+	} else {
+		0.0
+	}
+	
+	mut sum_renyi := 0.0
+	mut sum_min_ent := 0.0
+	if ta.packet_sizes.len > 0 {
+		mut sample_data := []u8{cap: 256}
+		for sz in ta.packet_sizes {
+			sample_data << u8(sz & 0xFF)
+		}
+		sum_renyi = calculate_renyi_entropy(sample_data)
+		sum_min_ent = calculate_min_entropy(sample_data)
+	}
+	
+	mut acc_sum := 0.0
+	if ta.intervals.len > 1 {
+		for i := 0; i < ta.intervals.len - 1; i++ {
+			mut acc := f64(ta.intervals[i + 1] - ta.intervals[i])
+			if acc < 0 {
+				acc = -acc
+			}
+			acc_sum += acc
+		}
+		acc_sum /= f64(ta.intervals.len - 1)
+	}
+	norm_pps_derivative := math.min(1.0, acc_sum / 1000.0)
+	mut sum_tail_patterns := 0.0
+	for p_tail in ta.tail_patterns {
+		sum_tail_patterns += p_tail
+	}
+	avg_tail_pattern := if ta.tail_patterns.len > 0 {
+		sum_tail_patterns / f64(ta.tail_patterns.len)
+	} else {
+		0.0
+	}
 
 	norm_pps := math.min(1.0, pps / 120.0)
 	norm_size := math.min(1.0, avg_size / 1500.0)
 	norm_jitter := math.min(1.0, jitter / 500.0)
-
+	
 	input := [
-		norm_pps,
-		norm_size,
-		norm_jitter,
-		avg_entropy,
-		norm_size_std,
-		large_ratio,
-		norm_entropy_std,
-		burst_ratio,
-		block_align_ratio,
-		norm_rolling_entropy_var,
-		avg_byte_uniformity,
+		norm_pps,                 // [0]
+		norm_size,                // [1]
+		norm_jitter,              // [2]
+		avg_entropy,              // [3]
+		norm_size_std,            // [4]
+		large_ratio,              // [5]
+		norm_entropy_std,          // [6]
+		burst_ratio,              // [7]
+		align_16_ratio,           // [8]
+		norm_rolling_entropy_var, // [9]
+		avg_byte_uniformity,      // [10]
+		norm_skewness,            // [11]
+		norm_kurtosis,            // [12]
+		size_autocorr_1,          // [13]
+		low_entropy_ratio,        // [14]
+		med_entropy_ratio,        // [15]
+		align_8_ratio,            // [16]
+		align_32_ratio,           // [17]
+		size_autocorr_2,          // [18]
+		size_autocorr_3,          // [19]
+		small_packet_ratio,       // [20]
+		med_packet_ratio,         // [21]
+		constant_run_ratio,       // [22]
+		sum_renyi,                // [23]
+		norm_pps_derivative,      // [24]
+		avg_tail_pattern,         // [25]
+		align_64_ratio,           // [26]
+		sum_min_ent,              // [27]
 	]
 
 	learning_rate := if ta.morph_mode {
@@ -811,6 +1144,7 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 	} else {
 		0.02
 	}
+	
 	winner, confidence := ta.model.predict_and_update(input, learning_rate)
 
 	ta.last_confidence = confidence
@@ -828,7 +1162,7 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 				color = cm.get_color(compressed_state)
 			}
 
-			println('${color}[State Transition] ${target_addr} -> Mode ${compressed_state} (Conf: ${int(ta.last_confidence)}%) | Stats -> PPS: ${int(pps)} size: ${int(avg_size)}B jitter: ${int(jitter)}ms entropy: ${avg_entropy:.2f}\x1b[0m')
+			println('${color}[Deep NN Transition] ${target_addr} -> Mode ${compressed_state} (Confidence: ${int(ta.last_confidence)}%) | Metrics -> PPS: ${int(pps)} Size: ${int(avg_size)}B Jitter: ${int(jitter)}ms Entropy: ${avg_entropy:.2f} Autocorr1: ${size_autocorr_1:.2f}\x1b[0m')
 		}
 	}
 }
