@@ -3,7 +3,7 @@
 ## Overview
 lagger is a dynamic network latency, packet loss simulation, and side-channel behavioral analysis proxy designed to emulate real-world network degradation at the application layer. Operating as a TCP, UDP, or SOCKS5 proxy, it introduces mathematically structured jitter, serialization delays, and bursty packet loss.
 
-Unlike simple random-delay simulators, lagger utilizes statistical distributions, network state machines, and a **2-Hidden-Layer Deep Competitive Neural Network (DCNN)** to segment and target traffic behaviors adaptively. By evaluating real-time temporal and payload features without decrypting packets, lagger can isolate specific traffic states (such as active streaming, chat messaging, or control signals) and apply customized network impairment profiles only when those behaviors are detected.
+Unlike simple random-delay simulators, lagger utilizes statistical distributions, network state machines, and the **vnm (V Neural Network Module) library** to build a **2-Hidden-Layer Deep Competitive Neural Network (DCNN)** designed to segment and target traffic behaviors adaptively. By evaluating real-time temporal and payload features without decrypting packets, lagger can isolate specific traffic states (such as active streaming, chat messaging, or control signals) and apply customized network impairment profiles only when those behaviors are detected.
 
 Additionally, lagger supports **Active Traffic Morphing**, allowing it to reshape the size and pacing of a program's traffic to match the statistical profile of another recorded application in real-time.
 
@@ -59,10 +59,11 @@ To bypass packet encryption and obfuscation without decryption, lagger extracts 
     *   `Size Autocorrelation Lag 2` (Sizing correlation across two-step gaps)
     *   `Size Autocorrelation Lag 3` (Sizing correlation across three-step gaps)
 
-### Deep Competitive Neural Network & Backprop Engine
-Rather than using a flat nearest-neighbor lookup, lagger runs a fully feed-forward neural network pipeline:
-*   **Layer Architecture:** $28 \text{ inputs} \to 64 \text{ neurons (ReLU)} \to 32 \text{ neurons (ReLU)} \to 32 \text{ competitive output nodes}$.
-*   **Unsupervised Competitive Backpropagation:** When active learning is enabled, classification error propagates back through Layer 2 and Layer 1, updating network weights and biases to reinforce non-linear feature representations.
+### Deep Competitive Neural Network & vnm Backprop Engine
+Rather than using a flat nearest-neighbor lookup or custom matrix calculations, lagger integrates the **vnm (V Neural Network Module)** library to run an optimized, structured feed-forward neural network pipeline:
+*   **Layer Architecture:** $28 \text{ inputs} \to 64 \text{ neurons (ReLU)} \to 32 \text{ neurons (ReLU)} \to 32 \text{ competitive output nodes (Linear)}$.
+*   **vnm Backpropagation & SGD Optimization:** When active learning is enabled, classification error propagates back through the layers using the library's gradient descent pipeline (`vnm.NeuralNetwork.train_step`). Weights and biases are updated dynamically via Stochastic Gradient Descent (SGD) to reinforce non-linear feature representations.
+*   **Type Compatibility:** Designed to scale dynamically with the library's type definition (`vnm.Fnn`), ensuring safety and performance whether the library is compiled in `f32` or `f64` precision mode.
 
 ### Dimension-Invariant Geometric Calibration
 To counter the "curse of dimensionality" over 28 dimensions, lagger implements two geometric optimizations to compute modeling confidence:
@@ -97,7 +98,7 @@ The mathematical precision of lagger makes it a highly capable tool across a spe
 
 ## Quick start (copy - paste - enter)
 ```bash
-pkg update -y && pkg install -y git clang make && if ! command -v v >/dev/null 2>&1; then git clone --depth=1 https://github.com/vlang/v && cd v && make && ./v symlink && cd ..; fi && git clone --depth=1 https://github.com/tailsmails/lagger && cd lagger && v -prod lagger.v -o lagger && ln -sf $(pwd)/lagger $PREFIX/bin/lagger
+pkg update -y && pkg install -y git clang make && if ! command -v v >/dev/null 2>&1; then git clone --depth=1 https://github.com/vlang/v && cd v && make && ./v symlink && cd ..; fi && git clone --depth=1 https://github.com/tailsmails/lagger && v install --git https://github.com/tailsmails/vnm && cd lagger && v -prod lagger.v -o lagger && ln -sf $(pwd)/lagger $PREFIX/bin/lagger
 ```
 
 ---
@@ -106,6 +107,10 @@ pkg update -y && pkg install -y git clang make && if ! command -v v >/dev/null 2
 *   **Operating System:** Cross-platform (Linux, macOS, Windows) as it relies on standard BSD socket APIs.
 *   **Privileges:** Standard user privileges (root/sudo is **not** required, as it runs as a user-space proxy).
 *   **Compiler:** V programming language compiler.
+*   **Project Structure:** To compile successfully, the `vnm` module must be installed:
+    ```bash
+    v install --git https://github.com/tailsmails/vnm
+    ```
 
 ---
 
@@ -157,11 +162,20 @@ Run the proxy in analyze-only mode, filtering specifically for your target app:
 Once you are done capturing traffic patterns, hit `Ctrl+C` to gracefully stop. A human-readable, pretty-printed JSON config will be written to `my_profile.lgr`.
 
 ### Step 2: Customizing the Workspaces
-Open the generated `my_profile.lgr` file in any text editor. You will see the learned centroids in their 28-dimensional format and a customizable `lag_configs` block. Assign separate `WaveConfig` workspaces to different modes:
+Open the generated `my_profile.lgr` file in any text editor. You will see the serialization format mapping to `vnm`'s architecture, including learned centroids in their 28-dimensional format and a customizable `lag_configs` block. Assign separate `WaveConfig` workspaces to different modes:
 
 ```json
 {
   "model": {
+    "seq": {
+      "net": {
+        "layers": [
+          { "weights": { "rows": 64, "cols": 28, "data": [...] }, "biases": { "rows": 64, "cols": 1, "data": [...] } },
+          { "weights": { "rows": 32, "cols": 64, "data": [...] }, "biases": { "rows": 32, "cols": 1, "data": [...] } },
+          { "weights": { "rows": 32, "cols": 32, "data": [...] }, "biases": { "rows": 32, "cols": 1, "data": [...] } }
+        ]
+      }
+    },
     "centroids": [
       [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
       [0.01, 0.05, 0.05, 0.85, 0.02, 0.01, 0.02, 0.05, 0.1, 0.05, 0.9, 0.3, 0.55, 0.2, 0.1, 0.1, 0.1, 0.05, 0.5, 0.5, 0.1, 0.1, 0.0, 0.5, 0.1, 0.0, 0.0, 0.5],
