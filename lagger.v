@@ -18,6 +18,7 @@ import os
 import flag
 import rand as _
 import json
+import vnm
 
 $if !windows {
 	#include <signal.h>
@@ -103,154 +104,104 @@ mut:
 
 struct ClusteringModel {
 mut:
-	w1                   [][]f64
-	b1                   []f64
-	w2                   [][]f64
-	b2                   []f64
-	w3                   [][]f64
-	b3                   []f64
-	centroids            [][]f64
+	seq                  vnm.Sequential
+	centroids            [][]vnm.Fnn
 	centroid_initialized []bool
 }
 
-fn relu(x f64) f64 {
-	return if x > 0.0 { x } else { 0.0 }
-}
-
 fn new_clustering_model() ClusteringModel {
-	mut w1 := [][]f64{len: 64}
-	mut b1 := []f64{len: 64}
+	mut seq := vnm.new_sequential(.sgd)
+	seq.set_normalize(false)
+	
+	seq.add(28, 64, .relu, 0.0, false)
+	seq.add(64, 32, .relu, 0.0, false)
+	seq.add(32, 32, .linear, 0.0, false)
+	
 	for i in 0 .. 64 {
-		w1[i] = []f64{len: 28}
-		b1[i] = 0.01 * f64(i % 5 - 2)
+		seq.net.layers[0].biases.data[i] = vnm.Fnn(0.01 * f64(i % 5 - 2))
 		for j in 0 .. 28 {
 			angle := f64(i * 28 + j) * 0.1
-			w1[i][j] = math.sin(angle) * 0.15
+			seq.net.layers[0].weights.data[i * 28 + j] = vnm.Fnn(math.sin(angle) * 0.15)
 		}
 	}
-
-	mut w2 := [][]f64{len: 32}
-	mut b2 := []f64{len: 32}
+	
 	for i in 0 .. 32 {
-		w2[i] = []f64{len: 64}
-		b2[i] = 0.01 * f64(i % 3 - 1)
+		seq.net.layers[1].biases.data[i] = vnm.Fnn(0.01 * f64(i % 3 - 1))
 		for j in 0 .. 64 {
 			angle := f64(i * 64 + j) * 0.15
-			w2[i][j] = math.cos(angle) * 0.12
+			seq.net.layers[1].weights.data[i * 64 + j] = vnm.Fnn(math.cos(angle) * 0.12)
 		}
 	}
-
-	mut w3 := [][]f64{len: 32}
-	mut b3 := []f64{len: 32}
+	
 	for i in 0 .. 32 {
-		w3[i] = []f64{len: 32}
-		b3[i] = 0.0
+		seq.net.layers[2].biases.data[i] = vnm.Fnn(0.0)
 		for j in 0 .. 32 {
 			angle := f64(i * 32 + j) * 0.2
-			w3[i][j] = math.sin(angle) * 0.2
+			seq.net.layers[2].weights.data[i * 32 + j] = vnm.Fnn(math.sin(angle) * 0.2)
 		}
 	}
 
-	mut centroids := [][]f64{len: 32}
+	mut centroids := [][]vnm.Fnn{len: 32}
 	for i in 0 .. 32 {
-		centroids[i] = []f64{len: 28}
+		centroids[i] = []vnm.Fnn{len: 28}
 		for j in 0 .. 28 {
-			centroids[i][j] = 0.5
+			centroids[i][j] = vnm.Fnn(0.5)
 		}
 	}
 
 	return ClusteringModel{
-		w1:                   w1
-		b1:                   b1
-		w2:                   w2
-		b2:                   b2
-		w3:                   w3
-		b3:                   b3
+		seq:                  seq
 		centroids:            centroids
 		centroid_initialized: []bool{len: 32, init: false}
 	}
 }
 
 fn (m ClusteringModel) clone() ClusteringModel {
-	mut cloned_w1 := [][]f64{len: m.w1.len}
-	for i in 0 .. m.w1.len { cloned_w1[i] = m.w1[i].clone() }
-	mut cloned_w2 := [][]f64{len: m.w2.len}
-	for i in 0 .. m.w2.len { cloned_w2[i] = m.w2[i].clone() }
-	mut cloned_w3 := [][]f64{len: m.w3.len}
-	for i in 0 .. m.w3.len { cloned_w3[i] = m.w3[i].clone() }
-	mut cloned_centroids := [][]f64{len: m.centroids.len}
-	for i in 0 .. m.centroids.len { cloned_centroids[i] = m.centroids[i].clone() }
+	serialized := json.encode(m.seq.net)
+	cloned_net := json.decode(vnm.NeuralNetwork, serialized) or { panic(err) }
+	cloned_seq := vnm.Sequential{
+		net: cloned_net
+	}
+
+	mut cloned_centroids := [][]vnm.Fnn{len: m.centroids.len}
+	for i in 0 .. m.centroids.len { 
+		cloned_centroids[i] = m.centroids[i].clone() 
+	}
 
 	return ClusteringModel{
-		w1:                   cloned_w1
-		b1:                   m.b1.clone()
-		w2:                   cloned_w2
-		b2:                   m.b2.clone()
-		w3:                   cloned_w3
-		b3:                   m.b3.clone()
+		seq:                  cloned_seq
 		centroids:            cloned_centroids
 		centroid_initialized: m.centroid_initialized.clone()
 	}
 }
 
-fn (mut m ClusteringModel) predict_and_update(input []f64, learning_rate f64) (int, f64) {
-	mut h1 := []f64{len: 64}
-	for i in 0 .. 64 {
-		mut sum := 0.0
-		for j in 0 .. 28 {
-			sum += input[j] * m.w1[i][j]
-		}
-		h1[i] = relu(sum + m.b1[i])
-	}
+fn (mut m ClusteringModel) predict_and_update(input []vnm.Fnn, learning_rate f64) (int, f64) {
+	input_tensor := vnm.new_tensor([28, 1], input)
+	
+	output_tensor := m.seq.predict(input_tensor) or { panic(err) }
 
-	mut h2 := []f64{len: 32}
-	for i in 0 .. 32 {
-		mut sum := 0.0
-		for j in 0 .. 64 {
-			sum += h1[j] * m.w2[i][j]
-		}
-		h2[i] = relu(sum + m.b2[i])
-	}
-
-	mut output := []f64{len: 32}
 	mut winner := 0
 	mut max_val := -1e9
 	for i in 0 .. 32 {
-		mut sum := 0.0
-		for j in 0 .. 32 {
-			sum += h2[j] * m.w3[i][j]
-		}
-		output[i] = sum + m.b3[i]
-		if output[i] > max_val {
-			max_val = output[i]
+		val := f64(output_tensor.data[i])
+		if val > max_val {
+			max_val = val
 			winner = i
 		}
 	}
 
 	if learning_rate > 0.0 {
-		mut d_out := []f64{len: 32}
-		for i in 0 .. 32 {
-			target := if i == winner { 1.0 } else { 0.0 }
-			d_out[i] = target - output[i]
-			m.b3[i] += learning_rate * d_out[i]
-			for j in 0 .. 32 {
-				m.w3[i][j] += learning_rate * d_out[i] * h2[j]
-			}
-		}
+		mut target_data := []vnm.Fnn{len: 32, init: 0.0}
+		target_data[winner] = 1.0
+		target_tensor := vnm.new_tensor([32, 1], target_data)
 
-		mut d_h2 := []f64{len: 32}
-		for j in 0 .. 32 {
-			mut err := 0.0
-			for i in 0 .. 32 {
-				err += d_out[i] * m.w3[i][j]
+		unsafe {
+			trained_out := m.seq.net.train_step(input_tensor, target_tensor, vnm.Fnn(learning_rate)) or {
+				panic(err)
 			}
-			d_h2[j] = if h2[j] > 0.0 { err } else { 0.0 }
-			m.b2[j] += learning_rate * d_h2[j]
-			for k in 0 .. 64 {
-				m.w2[j][k] += learning_rate * d_h2[j] * h1[k]
-			}
+			trained_out.free()
 		}
-
+		
 		if !m.centroid_initialized[winner] {
 			for j in 0 .. 28 {
 				m.centroids[winner][j] = input[j]
@@ -258,20 +209,25 @@ fn (mut m ClusteringModel) predict_and_update(input []f64, learning_rate f64) (i
 			m.centroid_initialized[winner] = true
 		} else {
 			for j in 0 .. 28 {
-				m.centroids[winner][j] += learning_rate * (input[j] - m.centroids[winner][j])
+				m.centroids[winner][j] += vnm.Fnn(learning_rate) * (input[j] - m.centroids[winner][j])
 			}
 		}
+		target_tensor.free()
 	}
 
 	mut dist := 0.0
 	for j in 0 .. 28 {
-		diff := input[j] - m.centroids[winner][j]
+		diff := f64(input[j] - m.centroids[winner][j])
 		dist += diff * diff
 	}
 	dist = math.sqrt(dist)
 
 	mean_dist := dist / 5.2915
 	confidence := math.exp(-mean_dist * 0.5) * 100.0
+
+	output_tensor.free()
+	input_tensor.free()
+
 	return winner, confidence
 }
 
@@ -1107,34 +1063,34 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 	norm_jitter := math.min(1.0, jitter / 500.0)
 	
 	input := [
-		norm_pps,                 // [0]
-		norm_size,                // [1]
-		norm_jitter,              // [2]
-		avg_entropy,              // [3]
-		norm_size_std,            // [4]
-		large_ratio,              // [5]
-		norm_entropy_std,          // [6]
-		burst_ratio,              // [7]
-		align_16_ratio,           // [8]
-		norm_rolling_entropy_var, // [9]
-		avg_byte_uniformity,      // [10]
-		norm_skewness,            // [11]
-		norm_kurtosis,            // [12]
-		size_autocorr_1,          // [13]
-		low_entropy_ratio,        // [14]
-		med_entropy_ratio,        // [15]
-		align_8_ratio,            // [16]
-		align_32_ratio,           // [17]
-		size_autocorr_2,          // [18]
-		size_autocorr_3,          // [19]
-		small_packet_ratio,       // [20]
-		med_packet_ratio,         // [21]
-		constant_run_ratio,       // [22]
-		sum_renyi,                // [23]
-		norm_pps_derivative,      // [24]
-		avg_tail_pattern,         // [25]
-		align_64_ratio,           // [26]
-		sum_min_ent,              // [27]
+		vnm.Fnn(norm_pps),                 // [0]
+		vnm.Fnn(norm_size),                // [1]
+		vnm.Fnn(norm_jitter),              // [2]
+		vnm.Fnn(avg_entropy),              // [3]
+		vnm.Fnn(norm_size_std),            // [4]
+		vnm.Fnn(large_ratio),              // [5]
+		vnm.Fnn(norm_entropy_std),          // [6]
+		vnm.Fnn(burst_ratio),              // [7]
+		vnm.Fnn(align_16_ratio),           // [8]
+		vnm.Fnn(norm_rolling_entropy_var), // [9]
+		vnm.Fnn(avg_byte_uniformity),      // [10]
+		vnm.Fnn(norm_skewness),            // [11]
+		vnm.Fnn(norm_kurtosis),            // [12]
+		vnm.Fnn(size_autocorr_1),          // [13]
+		vnm.Fnn(low_entropy_ratio),        // [14]
+		vnm.Fnn(med_entropy_ratio),        // [15]
+		vnm.Fnn(align_8_ratio),            // [16]
+		vnm.Fnn(align_32_ratio),           // [17]
+		vnm.Fnn(size_autocorr_2),          // [18]
+		vnm.Fnn(size_autocorr_3),          // [19]
+		vnm.Fnn(small_packet_ratio),       // [20]
+		vnm.Fnn(med_packet_ratio),         // [21]
+		vnm.Fnn(constant_run_ratio),       // [22]
+		vnm.Fnn(sum_renyi),                // [23]
+		vnm.Fnn(norm_pps_derivative),      // [24]
+		vnm.Fnn(avg_tail_pattern),         // [25]
+		vnm.Fnn(align_64_ratio),           // [26]
+		vnm.Fnn(sum_min_ent),              // [27]
 	]
 
 	learning_rate := if ta.morph_mode {
@@ -1314,7 +1270,7 @@ fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig, target_addr 
 		should_morph := morph_mode && !is_handshake && analyzer.last_confidence >= conf_threshold
 
 		if should_morph {
-			target_size := int(analyzer.model.centroids[analyzer.last_winner][1] * 1500.0)
+			target_size := int(f64(analyzer.model.centroids[analyzer.last_winner][1]) * 1500.0)
 			mut safe_target_size := target_size
 			if safe_target_size < 512 {
 				safe_target_size = 512
@@ -1363,7 +1319,7 @@ fn read_tcp(mut src &net.TcpConn, ch chan TcpChunk, cfg WaveConfig, target_addr 
 			mut arrival := time.now().unix_milli() + delay
 
 			if should_morph {
-				target_pps := analyzer.model.centroids[analyzer.last_winner][0] * 120.0
+				target_pps := f64(analyzer.model.centroids[analyzer.last_winner][0]) * 120.0
 				mut interval := i64(0)
 				if target_pps > 1.0 {
 					interval = i64(1000.0 / target_pps)
@@ -1570,7 +1526,7 @@ fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &ne
 		should_morph := morph_mode && !is_handshake && analyzer.last_confidence >= conf_threshold
 
 		if should_morph {
-			target_size := int(analyzer.model.centroids[analyzer.last_winner][1] * 1500.0)
+			target_size := int(f64(analyzer.model.centroids[analyzer.last_winner][1]) * 1500.0)
 			mut safe_target_size := target_size
 			if safe_target_size < 256 {
 				safe_target_size = 256
@@ -1600,7 +1556,7 @@ fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &ne
 			}
 
 			if should_morph {
-				target_pps := analyzer.model.centroids[analyzer.last_winner][0] * 120.0
+				target_pps := f64(analyzer.model.centroids[analyzer.last_winner][0]) * 120.0
 				mut interval := i64(0)
 				if target_pps > 1.0 {
 					interval = i64(1000.0 / target_pps)
@@ -1788,7 +1744,7 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 		should_morph := morph_mode && !is_handshake && analyzer.last_confidence >= conf_threshold
 
 		if should_morph {
-			target_size := int(analyzer.model.centroids[analyzer.last_winner][1] * 1500.0)
+			target_size := int(f64(analyzer.model.centroids[analyzer.last_winner][1]) * 1500.0)
 			mut safe_target_size := target_size
 			if safe_target_size < 256 {
 				safe_target_size = 256
@@ -1818,7 +1774,7 @@ fn start_udp_proxy(port int, target string, up_cfg WaveConfig, down_cfg WaveConf
 			}
 
 			if should_morph {
-				target_pps := analyzer.model.centroids[analyzer.last_winner][0] * 120.0
+				target_pps := f64(analyzer.model.centroids[analyzer.last_winner][0]) * 120.0
 				mut interval := i64(0)
 				if target_pps > 1.0 {
 					interval = i64(1000.0 / target_pps)
