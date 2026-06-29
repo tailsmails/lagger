@@ -118,7 +118,7 @@ pkg update -y && pkg install -y git clang make && if ! command -v v >/dev/null 2
 
 Compile the source code using the V compiler:
 ```bash
-v -prod lagger.v -o lagger
+v -prod lagger.v -d vnm_f64 -o lagger
 ```
 
 ---
