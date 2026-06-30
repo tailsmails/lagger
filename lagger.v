@@ -1460,8 +1460,12 @@ fn forward_udp_server_to_client(mut target_conn &net.UdpConn, mut proxy_conn &ne
 	mut next_send_time := time.now().unix_milli()
 	mut packet_index := 0
 	for {
-		bytes_read, _ := target_conn.read(mut buf) or { continue }
+		bytes_read, _ := target_conn.read(mut buf) or { 
+			time.sleep(50 * time.millisecond)
+			continue 
+		}
 		if bytes_read == 0 {
+			time.sleep(10 * time.millisecond)
 			continue
 		}
 		packet_index++
@@ -2029,44 +2033,14 @@ fn main() {
 		}
 		println('Model, ${lag_configs.len} state-specific lag workspaces, and ${config.merge_rules.len} learned grammar rules loaded successfully!')
 	}
+	
+	shutdown_chan := chan int{cap: 1}
 
-	os.signal_opt(.int, fn [save_path, model, lag_configs, grammar] (_ os.Signal) {
-		println('\n[SIGINT] Interrupted by user. Saving configuration to ${save_path}...')
-
-		mut final_configs := lag_configs.clone()
-		if final_configs.len == 0 {
-			final_configs['3'] = WaveConfig{
-				min_lat:      100.0
-				max_lat:      300.0
-				pattern:      'sine'
-				period:       5.0
-				natural:      true
-				jitter:       15.0
-				loss_enabled: true
-			}
+	os.signal_opt(.int, fn [shutdown_chan] (_ os.Signal) {
+		select {
+			shutdown_chan <- 1 {}
+			else {}
 		}
-
-		mut saved_rules := map[string]string{}
-		mut saved_counts := map[string]int{}
-		lock grammar {
-			saved_rules = grammar.merge_rules.clone()
-			saved_counts = grammar.pair_counts.clone()
-		}
-
-		config := LaggerConfig{
-			model:       model
-			lag_configs: final_configs
-			merge_rules: saved_rules
-			pair_counts: saved_counts
-		}
-
-		model_json := json.encode_pretty(config)
-		os.write_file(save_path, model_json) or {
-			eprintln('Error saving model file: ${err}')
-			exit(1)
-		}
-		println('[SYSTEM] Saved model, customizable lag templates, and ${saved_rules.len} learned grammar rules to ${save_path} successfully. Exiting.')
-		exit(0)
 	}) or {
 		eprintln('Failed to register SIGINT handler: ${err}')
 	}
@@ -2162,17 +2136,58 @@ fn main() {
 	}
 
 	println('Starting Lagger Dynamic Latency & Behavior Analyzer')
+	
 	if proto == 'tcp' {
-		start_tcp_proxy(port, target, up_cfg, down_cfg, upstream, shared color_manager,
+		spawn start_tcp_proxy(port, target, up_cfg, down_cfg, upstream, shared color_manager,
 			model, lag_configs, lag_states, conf_threshold, target_filter, shared grammar,
 			morph_mode)
 	} else if proto == 'udp' {
-		start_udp_proxy(port, target, up_cfg, down_cfg, shared color_manager, model,
+		spawn start_udp_proxy(port, target, up_cfg, down_cfg, shared color_manager, model,
 			lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
 	} else if proto == 'socks5' {
-		start_socks5_proxy(port, up_cfg, down_cfg, upstream, shared color_manager, model,
+		spawn start_socks5_proxy(port, up_cfg, down_cfg, upstream, shared color_manager, model,
 			lag_configs, lag_states, conf_threshold, target_filter, shared grammar, morph_mode)
 	} else {
 		eprintln('Unknown protocol: ${proto}')
+		return
 	}
+	
+	_ := <-shutdown_chan
+	
+	println('\n[SIGINT] Interrupted by user. Saving configuration to ${save_path}...')
+
+	mut final_configs := lag_configs.clone()
+	if final_configs.len == 0 {
+		final_configs['3'] = WaveConfig{
+			min_lat:      100.0
+			max_lat:      300.0
+			pattern:      'sine'
+			period:       5.0
+			natural:      true
+			jitter:       15.0
+			loss_enabled: true
+		}
+	}
+
+	mut saved_rules := map[string]string{}
+	mut saved_counts := map[string]int{}
+	lock grammar {
+		saved_rules = grammar.merge_rules.clone()
+		saved_counts = grammar.pair_counts.clone()
+	}
+
+	config := LaggerConfig{
+		model:       model
+		lag_configs: final_configs
+		merge_rules: saved_rules
+		pair_counts: saved_counts
+	}
+
+	model_json := json.encode_pretty(config)
+	os.write_file(save_path, model_json) or {
+		eprintln('Error saving model file: ${err}')
+		exit(1)
+	}
+	println('[SYSTEM] Saved model, customizable lag templates, and ${saved_rules.len} learned grammar rules to ${save_path} successfully. Exiting.')
+	exit(0)
 }
