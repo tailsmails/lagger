@@ -237,4 +237,4 @@ This software is provided "as is" and is intended solely for educational purpose
 ---
 
 ## License
-![License](https://img.shields.io/badge/License-GPLv3-blue.svg)
+![License](https://img.shields.io/badge/License-MIT-blue.svg)
