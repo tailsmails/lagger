@@ -14,38 +14,38 @@ $if !windows {
 fn C.signal(sig int, handler voidptr) voidptr
 
 const state_colors_list = [
-	'\x1b[38;5;34m',   // Green
-	'\x1b[38;5;39m',   // Blue
-	'\x1b[38;5;208m',  // Orange
-	'\x1b[38;5;198m',  // Pink
-	'\x1b[38;5;46m',   // Lime
-	'\x1b[38;5;21m',   // Dark Blue
-	'\x1b[38;5;165m',  // Purple
-	'\x1b[38;5;226m',  // Yellow
-	'\x1b[38;5;51m',   // Cyan
-	'\x1b[38;5;93m',   // Violet
-	'\x1b[38;5;202m',  // Red-Orange
-	'\x1b[38;5;129m',  // Magenta
-	'\x1b[38;5;118m',  // Light Green
-	'\x1b[38;5;45m',   // Light Blue
-	'\x1b[38;5;214m',  // Gold
-	'\x1b[38;5;161m',  // Crimson
-	'\x1b[38;5;82m',   // Bright Lime
-	'\x1b[38;5;27m',   // Royal Blue
-	'\x1b[38;5;201m',  // Fuchsia
-	'\x1b[38;5;220m',  // Amber
-	'\x1b[38;5;50m',   // Teal
-	'\x1b[38;5;57m',   // Indigo
-	'\x1b[38;5;196m',  // Pure Red
-	'\x1b[38;5;135m',  // Orchid
-	'\x1b[38;5;40m',   // Forest Green
-	'\x1b[38;5;33m',   // Sky Blue
-	'\x1b[38;5;200m',  // Hot Pink
-	'\x1b[38;5;142m',  // Olive Yellow
-	'\x1b[38;5;87m',   // Ice Blue
-	'\x1b[38;5;99m',   // Slate Purple
-	'\x1b[38;5;210m',  // Coral
-	'\x1b[38;5;123m',  // Mint
+	'\x1b[38;5;34m',
+	'\x1b[38;5;39m',
+	'\x1b[38;5;208m',
+	'\x1b[38;5;198m',
+	'\x1b[38;5;46m',
+	'\x1b[38;5;21m',
+	'\x1b[38;5;165m',
+	'\x1b[38;5;226m',
+	'\x1b[38;5;51m',
+	'\x1b[38;5;93m',
+	'\x1b[38;5;202m',
+	'\x1b[38;5;129m',
+	'\x1b[38;5;118m',
+	'\x1b[38;5;45m',
+	'\x1b[38;5;214m',
+	'\x1b[38;5;161m',
+	'\x1b[38;5;82m',
+	'\x1b[38;5;27m',
+	'\x1b[38;5;201m',
+	'\x1b[38;5;220m',
+	'\x1b[38;5;50m',
+	'\x1b[38;5;57m',
+	'\x1b[38;5;196m',
+	'\x1b[38;5;135m',
+	'\x1b[38;5;40m',
+	'\x1b[38;5;33m',
+	'\x1b[38;5;200m',
+	'\x1b[38;5;142m',
+	'\x1b[38;5;87m',
+	'\x1b[38;5;99m',
+	'\x1b[38;5;210m',
+	'\x1b[38;5;123m',
 ]
 
 struct TcpChunk {
@@ -96,6 +96,178 @@ mut:
 	centroid_initialized []bool
 }
 
+struct SerializableLayer {
+	weights         vnm.Matrix
+	biases          vnm.Matrix
+	activation_type vnm.ActivationType
+	last_input      vnm.Matrix
+	last_output     vnm.Matrix
+	delta           vnm.Matrix
+	grad_w          vnm.Matrix
+	m_w             vnm.Matrix
+	v_w             vnm.Matrix
+	m_b             vnm.Matrix
+	v_b             vnm.Matrix
+	beta1_t         vnm.Real
+	beta2_t         vnm.Real
+	dropout_rate    f64
+	is_rnn          bool
+	hidden_weights  vnm.Matrix
+	prev_hidden     vnm.Matrix
+	is_custom       bool
+}
+
+struct SerializableNeuralNetwork {
+	layers    []SerializableLayer
+	optimizer vnm.OptimizerType
+	normalize bool
+	means     []vnm.Real
+	stds      []vnm.Real
+}
+
+struct SerializableClusteringModel {
+	net_serializable     SerializableNeuralNetwork
+	quantization         vnm.QuantizationType
+	centroids            [][]vnm.Fnn
+	centroid_initialized []bool
+}
+
+struct SerializableLaggerConfig {
+	model       SerializableClusteringModel
+	lag_configs map[string]WaveConfig
+	merge_rules map[string]string
+	pair_counts map[string]int
+}
+
+fn nn_to_serializable(n vnm.NeuralNetwork) SerializableNeuralNetwork {
+	mut layers := []SerializableLayer{cap: n.layers.len}
+	for l in n.layers {
+		layers << SerializableLayer{
+			weights:         l.weights
+			biases:          l.biases
+			activation_type: l.activation_type
+			last_input:      l.last_input
+			last_output:     l.last_output
+			delta:           l.delta
+			grad_w:          l.grad_w
+			m_w:             l.m_w
+			v_w:             l.v_w
+			m_b:             l.m_b
+			v_b:             l.v_b
+			beta1_t:         l.beta1_t
+			beta2_t:         l.beta2_t
+			dropout_rate:    l.dropout_rate
+			is_rnn:          l.is_rnn
+			hidden_weights:  l.hidden_weights
+			prev_hidden:     l.prev_hidden
+			is_custom:       l.is_custom
+		}
+	}
+	return SerializableNeuralNetwork{
+		layers:    layers
+		optimizer: n.optimizer
+		normalize: n.normalize
+		means:     n.means
+		stds:      n.stds
+	}
+}
+
+fn serializable_to_nn(s SerializableNeuralNetwork) vnm.NeuralNetwork {
+	mut layers := []vnm.Layer{cap: s.layers.len}
+	for l in s.layers {
+		layers << vnm.Layer{
+			weights:         l.weights
+			biases:          l.biases
+			activation_type: l.activation_type
+			custom_act:      vnm.CustomActivation{}
+			last_input:      l.last_input
+			last_output:     l.last_output
+			delta:           l.delta
+			grad_w:          l.grad_w
+			m_w:             l.m_w
+			v_w:             l.v_w
+			m_b:             l.m_b
+			v_b:             l.v_b
+			beta1_t:         l.beta1_t
+			beta2_t:         l.beta2_t
+			dropout_rate:    l.dropout_rate
+			is_rnn:          l.is_rnn
+			hidden_weights:  l.hidden_weights
+			prev_hidden:     l.prev_hidden
+			is_custom:       l.is_custom
+		}
+	}
+	return vnm.NeuralNetwork{
+		layers:    layers
+		optimizer: s.optimizer
+		normalize: s.normalize
+		means:     s.means
+		stds:      s.stds
+	}
+}
+
+fn (m ClusteringModel) to_serializable() SerializableClusteringModel {
+	return SerializableClusteringModel{
+		net_serializable:     nn_to_serializable(m.seq.net)
+		quantization:         m.seq.quantization
+		centroids:            m.centroids
+		centroid_initialized: m.centroid_initialized
+	}
+}
+
+fn (s SerializableClusteringModel) to_clustering_model() ClusteringModel {
+	mut network := serializable_to_nn(s.net_serializable)
+	return ClusteringModel{
+		seq:                  vnm.Sequential{
+			net:          network
+			quantization: s.quantization
+		}
+		centroids:            s.centroids
+		centroid_initialized: s.centroid_initialized
+	}
+}
+
+fn clone_sequential(s vnm.Sequential) vnm.Sequential {
+	mut cloned_layers := []vnm.Layer{cap: s.net.layers.len}
+	for layer in s.net.layers {
+		cloned_layers << vnm.Layer{
+			weights:         layer.weights.clone()
+			biases:          layer.biases.clone()
+			activation_type: layer.activation_type
+			custom_act:      layer.custom_act
+			last_input:      layer.last_input.clone()
+			last_output:     layer.last_output.clone()
+			delta:           layer.delta.clone()
+			grad_w:          layer.grad_w.clone()
+			m_w:             layer.m_w.clone()
+			v_w:             layer.v_w.clone()
+			m_b:             layer.m_b.clone()
+			v_b:             layer.v_b.clone()
+			beta1_t:         layer.beta1_t
+			beta2_t:         layer.beta2_t
+			dropout_rate:    layer.dropout_rate
+			is_rnn:          layer.is_rnn
+			hidden_weights:  layer.hidden_weights.clone()
+			prev_hidden:     layer.prev_hidden.clone()
+			is_custom:       layer.is_custom
+			custom_forward:  layer.custom_forward
+			custom_backward: layer.custom_backward
+		}
+	}
+
+	return vnm.Sequential{
+		quantization: s.quantization
+		net: vnm.NeuralNetwork{
+			layers:    cloned_layers
+			optimizer: s.net.optimizer
+			normalize: s.net.normalize
+			means:     s.net.means.clone()
+			stds:      s.net.stds.clone()
+			loss_fn:   s.net.loss_fn
+		}
+	}
+}
+
 fn new_clustering_model() ClusteringModel {
 	mut seq := vnm.new_sequential(.sgd)
 	seq.set_normalize(false)
@@ -144,11 +316,7 @@ fn new_clustering_model() ClusteringModel {
 }
 
 fn (m ClusteringModel) clone() ClusteringModel {
-	serialized := json.encode(m.seq.net)
-	cloned_net := json.decode(vnm.NeuralNetwork, serialized) or { panic(err) }
-	cloned_seq := vnm.Sequential{
-		net: cloned_net
-	}
+	cloned_seq := clone_sequential(m.seq)
 
 	mut cloned_centroids := [][]vnm.Fnn{len: m.centroids.len}
 	for i in 0 .. m.centroids.len { 
@@ -1050,34 +1218,34 @@ fn (mut ta TrafficAnalyzer) analyze_state(target_addr string) {
 	norm_jitter := math.min(1.0, jitter / 500.0)
 	
 	input := [
-		vnm.Fnn(norm_pps),                 // [0]
-		vnm.Fnn(norm_size),                // [1]
-		vnm.Fnn(norm_jitter),              // [2]
-		vnm.Fnn(avg_entropy),              // [3]
-		vnm.Fnn(norm_size_std),            // [4]
-		vnm.Fnn(large_ratio),              // [5]
-		vnm.Fnn(norm_entropy_std),          // [6]
-		vnm.Fnn(burst_ratio),              // [7]
-		vnm.Fnn(align_16_ratio),           // [8]
-		vnm.Fnn(norm_rolling_entropy_var), // [9]
-		vnm.Fnn(avg_byte_uniformity),      // [10]
-		vnm.Fnn(norm_skewness),            // [11]
-		vnm.Fnn(norm_kurtosis),            // [12]
-		vnm.Fnn(size_autocorr_1),          // [13]
-		vnm.Fnn(low_entropy_ratio),        // [14]
-		vnm.Fnn(med_entropy_ratio),        // [15]
-		vnm.Fnn(align_8_ratio),            // [16]
-		vnm.Fnn(align_32_ratio),           // [17]
-		vnm.Fnn(size_autocorr_2),          // [18]
-		vnm.Fnn(size_autocorr_3),          // [19]
-		vnm.Fnn(small_packet_ratio),       // [20]
-		vnm.Fnn(med_packet_ratio),         // [21]
-		vnm.Fnn(constant_run_ratio),       // [22]
-		vnm.Fnn(sum_renyi),                // [23]
-		vnm.Fnn(norm_pps_derivative),      // [24]
-		vnm.Fnn(avg_tail_pattern),         // [25]
-		vnm.Fnn(align_64_ratio),           // [26]
-		vnm.Fnn(sum_min_ent),              // [27]
+		vnm.Fnn(norm_pps),
+		vnm.Fnn(norm_size),
+		vnm.Fnn(norm_jitter),
+		vnm.Fnn(avg_entropy),
+		vnm.Fnn(norm_size_std),
+		vnm.Fnn(large_ratio),
+		vnm.Fnn(norm_entropy_std),
+		vnm.Fnn(burst_ratio),
+		vnm.Fnn(align_16_ratio),
+		vnm.Fnn(norm_rolling_entropy_var),
+		vnm.Fnn(avg_byte_uniformity),
+		vnm.Fnn(norm_skewness),
+		vnm.Fnn(norm_kurtosis),
+		vnm.Fnn(size_autocorr_1),
+		vnm.Fnn(low_entropy_ratio),
+		vnm.Fnn(med_entropy_ratio),
+		vnm.Fnn(align_8_ratio),
+		vnm.Fnn(align_32_ratio),
+		vnm.Fnn(size_autocorr_2),
+		vnm.Fnn(size_autocorr_3),
+		vnm.Fnn(small_packet_ratio),
+		vnm.Fnn(med_packet_ratio),
+		vnm.Fnn(constant_run_ratio),
+		vnm.Fnn(sum_renyi),
+		vnm.Fnn(norm_pps_derivative),
+		vnm.Fnn(avg_tail_pattern),
+		vnm.Fnn(align_64_ratio),
+		vnm.Fnn(sum_min_ent),
 	]
 
 	learning_rate := if ta.morph_mode {
@@ -2008,11 +2176,11 @@ fn main() {
 			eprintln('Failed to read model file: ${err}')
 			return
 		}
-		config := json.decode(LaggerConfig, content) or {
+		config := json.decode(SerializableLaggerConfig, content) or {
 			eprintln('Failed to decode Lagger config JSON: ${err}')
 			return
 		}
-		model = config.model
+		model = config.model.to_clustering_model()
 		lag_configs = config.lag_configs.clone()
 		lock grammar {
 			grammar.merge_rules = config.merge_rules.clone()
@@ -2163,8 +2331,8 @@ fn main() {
 		saved_counts = grammar.pair_counts.clone()
 	}
 
-	config := LaggerConfig{
-		model:       model
+	config := SerializableLaggerConfig{
+		model:       model.to_serializable()
 		lag_configs: final_configs
 		merge_rules: saved_rules
 		pair_counts: saved_counts
