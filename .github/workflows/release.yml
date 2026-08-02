@@ -8,18 +8,50 @@ on:
 permissions:
   contents: write
 
+env:
+  APP_NAME: lagger
+  EXTRA_FLAGS: "-d vnm_f64"
+
 jobs:
-  release:
+  build:
     runs-on: ${{ matrix.runner }}
 
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: amd64
+          - target: linux-amd64
             runner: ubuntu-latest
-            build_cmd: v -enable-globals -d vnm_f64 -cflags "-static" -os linux -arch amd64 -o lagger-linux-amd64 .
-            
+            setup_cmd: sudo apt-get update && sudo apt-get install -y musl-tools
+            build_cmd: |
+              v $EXTRA_FLAGS -d no_backtrace -enable-globals -prod -autofree -os linux -o $APP_NAME.c .
+              musl-gcc -O3 -static $APP_NAME.c -o $APP_NAME$SUFFIX -lm
+            artifact_suffix: -linux-amd64
+
+          - target: linux-arm64
+            runner: ubuntu-latest
+            setup_cmd: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+            build_cmd: |
+              v $EXTRA_FLAGS -enable-globals -prod -autofree -os linux -o $APP_NAME.c .
+              aarch64-linux-gnu-gcc -O3 -static $APP_NAME.c -o $APP_NAME$SUFFIX -lm
+            artifact_suffix: -linux-arm64
+
+          - target: android-arm64
+            runner: ubuntu-latest
+            setup_cmd: ""
+            build_cmd: |
+              v $EXTRA_FLAGS -enable-globals -prod -autofree -os termux -o $APP_NAME.c .
+              $ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang -O3 -fPIE -pie -U__ANDROID__ $APP_NAME.c -o $APP_NAME$SUFFIX -lm
+            artifact_suffix: -android-arm64
+
+          - target: android-arm
+            runner: ubuntu-latest
+            setup_cmd: ""
+            build_cmd: |
+              v $EXTRA_FLAGS -enable-globals -prod -autofree -os termux -o $APP_NAME.c .
+              $ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang -O3 -fPIE -pie -U__ANDROID__ $APP_NAME.c -o $APP_NAME$SUFFIX -lm
+            artifact_suffix: -android-arm
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,18 +61,40 @@ jobs:
         with:
           check-latest: true
 
-      - name: Install dependencies
+      - name: Setup Compiler Dependencies
+        if: matrix.setup_cmd != ''
+        run: ${{ matrix.setup_cmd }}
+
+      - name: Setup Dependencies
         run: v install --git https://github.com/tailsmails/vnm
 
       - name: Build binary
         run: ${{ matrix.build_cmd }}
+        env:
+          SUFFIX: ${{ matrix.artifact_suffix }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}${{ matrix.artifact_suffix }}
+          path: ${{ env.APP_NAME }}${{ matrix.artifact_suffix }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          merge-multiple: true
 
       - name: Upload to Release
         uses: ncipollo/release-action@v1
         with:
           tag: build-${{ github.run_number }}
           name: Build ${{ github.run_number }}
-          artifacts: lagger-linux-${{ matrix.arch }}
+          artifacts: ./artifacts/*
           generateReleaseNotes: true
           allowUpdates: true
           token: ${{ secrets.GITHUB_TOKEN }}
