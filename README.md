@@ -96,13 +96,6 @@ The mathematical precision of lagger makes it a highly capable tool across a spe
 
 ---
 
-## Quick start (copy - paste - enter)
-```bash
-apt update -y && apt install -y git clang make && if ! command -v v >/dev/null 2>&1; then git clone --depth=1 https://github.com/vlang/v && cd v && make && ./v symlink && cd ..; fi && git clone --depth=1 https://github.com/tailsmails/lagger && v install --git https://github.com/tailsmails/vnm && cd lagger && v -prod lagger.v -d vnm_f64 -o lagger && ln -sf $(pwd)/lagger $PREFIX/bin/lagger
-```
-
----
-
 ## Requirements
 *   **Operating System:** Cross-platform (Linux, macOS, Windows) as it relies on standard BSD socket APIs.
 *   **Privileges:** Standard user privileges (root/sudo is **not** required, as it runs as a user-space proxy).
